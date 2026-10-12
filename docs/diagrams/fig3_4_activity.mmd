@@ -1,0 +1,22 @@
+flowchart TD
+  S((Start)) --> A[Business app sends message<br/>with API key + session token]
+  A --> B{API key and session valid?}
+  B -- No --> X[Return 401 Unauthorized] --> E((End))
+  B -- Yes --> C[Validate length, screen for<br/>prompt injection, score sentiment]
+  C --> D{Conversation already<br/>with a human?}
+  D -- Yes --> D1[Store message, notify<br/>customer a human will reply] --> E
+  D -- No --> F{Pending action awaiting<br/>confirmation?}
+  F -- "YES / NO reply" --> F1[Re-validate and execute,<br/>or cancel the action] --> H
+  F -- No --> G[LLM produces plan:<br/>intent, category, confidence,<br/>requested action, draft reply]
+  G --> G1{Action requested?}
+  G1 -- No --> H
+  G1 -- Yes --> P[Policy engine checks:<br/>allowlist, parameters, injection,<br/>rate limit, ownership, order state, risk]
+  P --> P1{Decision}
+  P1 -- Denied --> P2[Log denial, count failed attempt] --> H
+  P1 -- Read-only allowed --> P3[Execute business API,<br/>compose reply from result] --> H
+  P1 -- Data-changing --> P4[Ask customer to confirm] --> H
+  P1 -- High risk --> P5[Hold for human approval] --> H
+  H{Handoff engine: negative sentiment,<br/>failed attempts, approval needed,<br/>human requested, repeated attacks?}
+  H -- Yes --> H1[Create handoff with summary<br/>and priority, mark conversation] --> R
+  H -- No --> R[Redact output, save reply<br/>and audit log, return response]
+  R --> E

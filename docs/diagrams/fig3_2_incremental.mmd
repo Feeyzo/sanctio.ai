@@ -1,0 +1,22 @@
+flowchart TB
+  R[Requirements analysis &<br/>overall architecture] --> I1
+  subgraph I1[Increment 1: Core API]
+    direction LR
+    a1[Design] --> b1[Implement] --> c1[Test]
+  end
+  I1 --> I2
+  subgraph I2[Increment 2: AI + verified actions]
+    direction LR
+    a2[Design] --> b2[Implement] --> c2[Test]
+  end
+  I2 --> I3
+  subgraph I3[Increment 3: Sentiment & handoff]
+    direction LR
+    a3[Design] --> b3[Implement] --> c3[Test]
+  end
+  I3 --> I4
+  subgraph I4[Increment 4: Security hardening & dashboard]
+    direction LR
+    a4[Design] --> b4[Implement] --> c4[Test]
+  end
+  I4 --> S[System & usability testing]

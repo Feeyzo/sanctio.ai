@@ -1,0 +1,31 @@
+sequenceDiagram
+  autonumber
+  actor C as Customer
+  participant App as Business App
+  participant API as Agent API
+  participant LLM as Gemini (LLM)
+  participant PE as Policy Engine
+  participant BA as Business API (Orders)
+  participant DB as Database
+  App->>API: POST /api/v1/sessions (API key, customer id)
+  API->>DB: store hashed session token
+  API-->>App: session_token
+  C->>App: "Please cancel order ORD-10023"
+  App->>API: POST /api/v1/chat (API key, session, message)
+  API->>API: verify session, injection screen, sentiment
+  API->>LLM: conversation + tool list
+  LLM-->>API: plan {intent: cancel_order, action: cancel_order(ORD-10023)}
+  API->>PE: validate(action, params, session)
+  PE->>DB: order exists & belongs to session customer? status?
+  PE-->>API: needs_confirmation
+  API->>DB: log action (awaiting_confirmation)
+  API-->>App: "Please confirm: I will cancel ORD-10023…"
+  C->>App: "YES"
+  App->>API: POST /api/v1/chat
+  API->>PE: re-validate pending action
+  PE-->>API: still permitted
+  API->>BA: cancel_order(ORD-10023)
+  BA->>DB: update order status
+  BA-->>API: {status: cancelled}
+  API->>DB: log action (executed)
+  API-->>App: "Done — order ORD-10023 has been cancelled"

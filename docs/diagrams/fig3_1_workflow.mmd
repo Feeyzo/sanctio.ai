@@ -1,0 +1,12 @@
+flowchart TB
+  subgraph r1[" "]
+    direction LR
+    A[Introduction] --> B[Literature<br/>Review] --> C[Requirements<br/>Elicitation] --> D[Analysis &<br/>Design]
+  end
+  subgraph r2[" "]
+    direction LR
+    E[Incremental<br/>Implementation] --> F[Testing &<br/>Evaluation] --> G[Write-up] --> H[Defence<br/>Slides]
+  end
+  r1 --> r2
+  style r1 fill:#fff,stroke:#fff
+  style r2 fill:#fff,stroke:#fff

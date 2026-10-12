@@ -1,0 +1,74 @@
+erDiagram
+  BUSINESS ||--o{ CUSTOMER : has
+  BUSINESS ||--o{ ADMIN_USER : employs
+  BUSINESS ||--o{ CONVERSATION : owns
+  CUSTOMER ||--o{ SESSION : "signs in with"
+  CUSTOMER ||--o{ ORDER : places
+  CUSTOMER ||--o{ CONVERSATION : starts
+  CONVERSATION ||--o{ MESSAGE : contains
+  CONVERSATION ||--o{ ACTION_LOG : records
+  CONVERSATION ||--o{ HANDOFF : "escalates to"
+  CONVERSATION ||--o{ SECURITY_EVENT : logs
+  BUSINESS { int id PK
+    string name
+    string api_key_hash
+    text allowed_actions }
+  CUSTOMER { int id PK
+    int business_id FK
+    string external_id
+    string name
+    string email
+    string phone }
+  SESSION { int id PK
+    string token_hash
+    int customer_id FK
+    int business_id FK
+    datetime expires_at
+    bool revoked
+    int action_count }
+  ORDER { int id PK
+    string order_ref
+    int customer_id FK
+    string item
+    float amount
+    string status
+    string payment_status
+    string shipping_address }
+  CONVERSATION { int id PK
+    int business_id FK
+    int customer_id FK
+    string status
+    string category
+    int failed_attempts
+    bool resolved_by_ai
+    float last_sentiment }
+  MESSAGE { int id PK
+    int conversation_id FK
+    string sender
+    text content
+    float sentiment
+    string intent
+    float confidence }
+  ACTION_LOG { int id PK
+    int conversation_id FK
+    string action
+    text params
+    string decision
+    text reason
+    text result }
+  HANDOFF { int id PK
+    int conversation_id FK
+    text reasons
+    text summary
+    string priority
+    string status
+    string assigned_to }
+  SECURITY_EVENT { int id PK
+    int conversation_id FK
+    string event_type
+    text detail }
+  ADMIN_USER { int id PK
+    int business_id FK
+    string email
+    string password_hash
+    string name }

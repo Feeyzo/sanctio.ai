@@ -1,0 +1,32 @@
+flowchart TB
+  subgraph Clients[Client layer]
+    W[Business website / mobile app] 
+    AD[Admin dashboard - React]
+  end
+  subgraph APIL[API layer - FastAPI]
+    I["Integration API /api/v1<br/>(API key + session token)"]
+    AA["Admin API /api/admin<br/>(signed admin token)"]
+  end
+  subgraph Core[Agent core]
+    O[Agent orchestrator]
+    SG[Security guard:<br/>injection screen, output redaction]
+    SA[Sentiment analyser]
+    L[LLM engine:<br/>Gemini / rule-based fallback]
+    PE[Deterministic policy engine]
+    HE[Handoff engine]
+  end
+  subgraph Biz[Business integration layer]
+    T[Action registry<br/>least-privilege allowlist]
+    BA[Business API - orders]
+  end
+  DB[(Database:<br/>sessions, conversations,<br/>audit logs, handoffs)]
+  G[[Google Gemini API]]
+  W --> I --> O
+  AD --> AA --> DB
+  O --> SG
+  O --> SA
+  O --> L --> G
+  O --> PE --> T --> BA
+  O --> HE
+  O --> DB
+  BA --> DB

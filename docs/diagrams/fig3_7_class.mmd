@@ -1,0 +1,75 @@
+classDiagram
+  direction LR
+  class AgentOrchestrator {
+    +handle_message(business, session, text, conversation_id) dict
+    -get_conversation() Conversation
+    -execute(action, params, order) dict
+    -summary(conversation, reasons) str
+  }
+  class LLMEngine {
+    <<interface>>
+    +plan(message, history, business, tools) Plan
+    +compose(plan, action, outcome, data, reason) str
+  }
+  class GeminiEngine {
+    -api_key: str
+    -model: str
+    -fallback: MockEngine
+  }
+  class MockEngine
+  class Plan {
+    +intent: str
+    +category: str
+    +confidence: float
+    +action: str
+    +params: dict
+    +reply: str
+    +wants_human: bool
+    +not_resolved: bool
+    +resolved: bool
+  }
+  class PolicyEngine {
+    +validate(business, session, action, params, injection) Decision
+  }
+  class Decision {
+    +status: str
+    +reason: str
+    +order: Order
+  }
+  class HandoffEngine {
+    +evaluate(sentiment, recent, confidence, failed, asked, approval, injection) HandoffDecision
+  }
+  class HandoffDecision {
+    +handoff: bool
+    +reasons: list
+    +priority: str
+  }
+  class SentimentAnalyser {
+    +analyse(text) float
+    +label(score) str
+  }
+  class SecurityGuard {
+    +detect_injection(text) list
+    +sanitize_output(text) str
+    +require_session() CustomerSession
+    +require_admin() AdminUser
+  }
+  class ActionSpec {
+    +name: str
+    +params: dict
+    +risk: str
+    +mutates: bool
+    +handler()
+  }
+  LLMEngine <|.. GeminiEngine
+  LLMEngine <|.. MockEngine
+  GeminiEngine --> MockEngine : falls back to
+  AgentOrchestrator --> LLMEngine
+  AgentOrchestrator --> PolicyEngine
+  AgentOrchestrator --> HandoffEngine
+  AgentOrchestrator --> SentimentAnalyser
+  AgentOrchestrator --> SecurityGuard
+  LLMEngine ..> Plan : creates
+  PolicyEngine ..> Decision : returns
+  PolicyEngine --> ActionSpec : checks
+  HandoffEngine ..> HandoffDecision : returns
