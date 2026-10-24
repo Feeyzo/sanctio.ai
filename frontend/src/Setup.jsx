@@ -21,6 +21,8 @@ export default function Setup({ auth, newApiKey }) {
   const [showSecret, setShowSecret] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState('')
+  const [llmTest, setLlmTest] = useState(null)
+  const [testing, setTesting] = useState(false)
   useEffect(() => { api('/api/admin/business', { headers: auth }).then(setB).catch((e) => setError(e.message)) }, [auth])
   if (!b) return <p className="muted">{error || 'Loading…'}</p>
 
@@ -31,6 +33,13 @@ export default function Setup({ auth, newApiKey }) {
       setB(await api('/api/admin/business', { method: 'PUT', headers: auth, body: { name: b.name, description: b.description } }))
       setSaved(true); setTimeout(() => setSaved(false), 1500)
     } catch (err) { setError(err.message) }
+  }
+  const testLlm = async () => {
+    setTesting(true)
+    setLlmTest(null)
+    try { setLlmTest(await api('/api/admin/llm/test', { method: 'POST', headers: auth })) }
+    catch (err) { setLlmTest({ ok: false, error: err.message }) }
+    finally { setTesting(false) }
   }
   const rotate = async () => {
     try {
@@ -68,8 +77,20 @@ export default function Setup({ auth, newApiKey }) {
         <h3 className="gap">AI model</h3>
         <p>{b.llm_provider === 'gemini' ? 'Google Gemini' : 'Built-in rule-based engine'}</p>
         {b.llm_provider !== 'gemini' && <p className="muted small">No Gemini key is configured on this server, so the agent
-          matches messages to your actions and guides by keyword. Set <code>GEMINI_API_KEY</code> on the server for
-          full language understanding.</p>}
+          matches messages to your actions and guides by keyword, and only understands simple phrasing. Set{' '}
+          <code>GEMINI_API_KEY</code> on the server for full language understanding.</p>}
+        {b.llm_provider === 'gemini' && b.llm_status?.last_call_ok === false && (
+          <p className="error small">The last Gemini call failed, so the agent answered with the rule-based engine
+            instead: {b.llm_status.last_error}</p>)}
+        {b.llm_provider === 'gemini' && (
+          <>
+            <button type="button" className="ghost" disabled={testing} onClick={testLlm}>
+              {testing ? 'Testing…' : 'Test Gemini'}</button>
+            {llmTest && (llmTest.ok
+              ? <p className="small">Gemini ({llmTest.model}) answered in {llmTest.seconds}s: “{llmTest.reply}”</p>
+              : <p className="error small">Gemini did not answer: {llmTest.error}</p>)}
+          </>
+        )}
       </div>
 
       <form className="card login" onSubmit={save}>

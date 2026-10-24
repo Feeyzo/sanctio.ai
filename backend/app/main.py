@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -15,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from . import agent, connectors, policy
+from . import agent, connectors, llm, policy
 from .channels import whatsapp
 from .channels.whatsapp_api import WhatsAppError, normalise_phone
 from .config import LLM_PROVIDER
@@ -201,9 +202,16 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
 
 
 # ------------------------------------------------------- dashboard: setup
+def _llm_status() -> dict:
+    """Which engine answers, and whether the last Gemini call worked (a bad key otherwise fails silently)."""
+    s = llm.status
+    return {"provider": LLM_PROVIDER, "last_call_ok": s["ok"], "last_error": s["error"],
+            "seconds_ago": round(time.time() - s["at"]) if s["at"] else None}
+
+
 def _business_view(b: Business) -> dict:
     return {"name": b.name, "description": b.description, "api_key_prefix": b.api_key_prefix,
-            "webhook_secret": b.webhook_secret, "llm_provider": LLM_PROVIDER}
+            "webhook_secret": b.webhook_secret, "llm_provider": LLM_PROVIDER, "llm_status": _llm_status()}
 
 
 @app.get("/api/admin/business", tags=["dashboard"])
@@ -217,6 +225,12 @@ def update_business(body: BusinessIn, admin: AdminUser = Depends(require_admin),
     business.name, business.description = body.name.strip(), body.description.strip()
     db.commit()
     return _business_view(business)
+
+
+@app.post("/api/admin/llm/test", tags=["dashboard"])
+def test_llm(admin: AdminUser = Depends(require_admin)):
+    """Send one message to Gemini and report whether it answered (and the error if not)."""
+    return llm.check()
 
 
 @app.post("/api/admin/business/rotate-api-key", tags=["dashboard"])
@@ -511,18 +525,18 @@ def pending_approvals(admin: AdminUser = Depends(require_admin), db: Session = D
 def decide_approval(action_id: int, verdict: str, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
     if verdict not in ("approve", "reject"):
         raise HTTPException(400, "Verdict must be approve or reject")
-    log = db.get(ActionLog, action_id)
-    if not log or log.decision != "pending_approval":
+    entry = db.get(ActionLog, action_id)
+    if not entry or entry.decision != "pending_approval":
         raise HTTPException(404, "No pending approval with that id")
-    conv = _own_conversation(db, admin, log.conversation_id)
-    label = log.action.replace("_", " ")
+    conv = _own_conversation(db, admin, entry.conversation_id)
+    label = entry.action.replace("_", " ")
     if verdict == "reject":
-        log.decision, log.reason = "rejected", f"Rejected by {admin.name}"
+        entry.decision, entry.reason = "rejected", f"Rejected by {admin.name}"
         text = f"After review, our team could not approve your {label} request."
     else:
         business = db.get(Business, admin.business_id)
-        action = policy.get_action(db, business, log.action)
-        clean, problem = policy.check_params(json.loads(action.params), json.loads(log.params)) if action else (None, "")
+        action = policy.get_action(db, business, entry.action)
+        clean, problem = policy.check_params(json.loads(action.params), json.loads(entry.params)) if action else (None, "")
         if clean is None:
             raise HTTPException(409, problem or "This action is no longer available")
         # check it is still valid for this customer, then run it with the customer id from the conversation
@@ -534,8 +548,8 @@ def decide_approval(action_id: int, verdict: str, admin: AdminUser = Depends(req
             raise HTTPException(409, "The business endpoint did not acknowledge the dry run")
         if not result.ok:
             raise HTTPException(409, result.error)
-        log.decision, log.reason = "approved", f"Approved by {admin.name}"
-        log.result = agent.to_json({"summary": result.summary, "data": result.data})
+        entry.decision, entry.reason = "approved", f"Approved by {admin.name}"
+        entry.result = agent.to_json({"summary": result.summary, "data": result.data})
         text = f"Good news — your {label} request has been approved and processed."
         if result.summary:
             text += f" {result.summary}"
@@ -550,7 +564,7 @@ def decide_approval(action_id: int, verdict: str, admin: AdminUser = Depends(req
         except WhatsAppError as exc:
             log.warning("Approval result for conversation %s not delivered on WhatsApp: %s", conv.id, exc)
             delivered = False
-    return {"ok": True, "decision": log.decision, "whatsapp_delivered": delivered}
+    return {"ok": True, "decision": entry.decision, "whatsapp_delivered": delivered}
 
 
 @app.get("/api/admin/security-events", tags=["dashboard"])

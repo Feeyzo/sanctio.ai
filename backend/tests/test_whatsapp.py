@@ -322,3 +322,17 @@ def test_wa24_missing_access_token_still_records_the_message(monkeypatch, wa, gr
     assert graph.requests == []  # the reply could not be sent...
     with SessionLocal() as db:   # ...but the message reached the agent and the conversation
         assert db.query(Message).filter_by(sender="customer").count() == 1
+
+
+def test_wa25_approval_still_succeeds_when_whatsapp_delivery_fails(client, admin, api_key, wa, logistics):
+    fatima = "2348030000003"
+    assert client.post("/api/v1/sessions", headers={"X-API-Key": api_key},
+                       json={"customer_id": "C-1003", "customer_phone": "+" + fatima}).status_code == 200
+    wa.send(fatima, "I want a refund for SHP-3001 because the package arrived damaged")
+    pending = client.get("/api/admin/approvals", headers=admin).json()
+    assert len(pending) == 1
+    wa.graph.fail = [400]  # Meta refuses the notification (e.g. an expired token)
+    r = client.post(f"/api/admin/approvals/{pending[0]['id']}/approve", headers=admin)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "decision": "approved", "whatsapp_delivered": False}
+    assert logistics.shipments["SHP-3001"]["status"] == "refunded"
