@@ -123,3 +123,51 @@ ALTER TABLE conversations ADD COLUMN wa_phone_number_id VARCHAR(32) NOT NULL DEF
    Message it from a phone number you have not linked to see what an unlinked number can do.
 
 The WhatsApp tests (`backend/tests/test_whatsapp.py`) replace the Graph API with an in-process fake, so no network is needed.
+
+## Demo business: SwiftShip
+`demo_business/app.py` is a small, separate web app playing a real business that has integrated Sanctio. It has a
+customer sign-in (pick a demo customer), a shipments page that refreshes every 3 seconds, the Sanctio chat widget
+(using a session its server opened with the API key), and the signed action endpoint Sanctio calls (`POST /sanctio`).
+
+`backend/scripts/seed_demo.py` creates or resets the matching business on Sanctio: actions pointing at SwiftShip,
+knowledge-base articles, customers (with linked WhatsApp numbers if given), and the dashboard login. A reset wipes
+the demo business's conversations, handoffs and logs, then also resets SwiftShip's shipments.
+
+Run both locally:
+```powershell
+# terminal 1 - Sanctio (as above), terminal 2 - SwiftShip on http://localhost:8100
+cd demo_business
+$env:SANCTIO_URL = "http://localhost:8000"; $env:DEMO_API_KEY = "sk_live_local_demo_key"
+$env:DEMO_WEBHOOK_SECRET = "whsec_local_demo_secret"; $env:DEMO_RESET_TOKEN = "local-reset"
+..\backend\.venv\Scripts\python.exe -m uvicorn app:app --port 8100
+
+# terminal 3 - seed / reset (same DEMO_* values, plus these)
+cd backend
+$env:DEMO_API_KEY = "sk_live_local_demo_key"; $env:DEMO_WEBHOOK_SECRET = "whsec_local_demo_secret"
+$env:DEMO_RESET_TOKEN = "local-reset"; $env:DEMO_BUSINESS_URL = "http://localhost:8100"; $env:DEMO_ADMIN_PASSWORD = "Passw0rd!23"
+.\.venv\Scripts\python.exe -m scripts.seed_demo
+```
+Then open http://localhost:8100 as a customer, and http://localhost:5173 signed in as `demo@swiftship.test`.
+
+## Deploy for a live demo (Render)
+`render.yaml` describes everything: the `sanctio` service (Docker: API + website), the `swiftship-demo` service,
+and a PostgreSQL database. Starter plans cost a few dollars a month. Free instances sleep and take about a
+minute to wake, which is not something to risk during a presentation.
+
+1. Push the repository to GitHub. In Render: **New → Blueprint**, choose the repository.
+2. When asked for values: `DEMO_ADMIN_PASSWORD` (your dashboard password), `GEMINI_API_KEY` (optional), and the
+   WhatsApp values (optional, see below). Leave `DEMO_BUSINESS_URL` and `SANCTIO_URL` blank for now.
+3. After the first deploy, copy the two public URLs. Set `DEMO_BUSINESS_URL` on **sanctio** to the swiftship-demo URL,
+   and `SANCTIO_URL` on **swiftship-demo** to the sanctio URL. Both redeploy. On start, Sanctio seeds the demo
+   business if it doesn't exist yet.
+4. Open the SwiftShip URL, sign in as a customer and chat. Sign in to the Sanctio URL as `demo@swiftship.test`
+   to see the dashboard.
+5. **Reset before each rehearsal and before the defense:** in the sanctio service's **Shell** tab, run
+   `python -m scripts.seed_demo`.
+
+**WhatsApp on the hosted demo:** use a permanent access token (Meta Business Settings → System users → generate
+a token with `whatsapp_business_messaging`). The temporary API Setup token expires after 24 hours. Set the
+callback URL to `https://<sanctio-url>/webhooks/whatsapp` and the verify token to the generated
+`WHATSAPP_VERIFY_TOKEN` (shown in the service's Environment tab). To link customers' phones, set
+`DEMO_CUSTOMER_PHONES` (for example `C-1001=+2348030000001`) on both services and reset. Meta's test number only
+messages the phone numbers you have added as recipients.

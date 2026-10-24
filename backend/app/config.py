@@ -6,6 +6,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Database (SQLite by default; any SQLAlchemy URL works, e.g. PostgreSQL)
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'agent.db'}")
+# hosting providers hand out postgres:// URLs; tell SQLAlchemy to use the psycopg (v3) driver
+if DATABASE_URL.startswith(("postgres://", "postgresql://")):
+    DATABASE_URL = "postgresql+psycopg://" + DATABASE_URL.split("://", 1)[1]
 
 # LLM provider: "gemini" uses Google Gemini; "mock" uses the built-in rule-based
 # engine (no internet / no key needed — used for tests and offline demos).
