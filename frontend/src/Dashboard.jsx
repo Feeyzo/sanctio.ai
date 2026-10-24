@@ -1,28 +1,24 @@
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, fmtDate, pretty } from './api.js'
+import Setup from './Setup.jsx'
+import Actions from './Actions.jsx'
+import Knowledge from './Knowledge.jsx'
+import Playground from './Playground.jsx'
 
-const TABS = ['Overview', 'Handoffs', 'Approvals', 'Conversations', 'Security']
-
-function Login({ onLogin }) {
-  const [email, setEmail] = useState('admin@shopdemo.ng')
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
-  async function submit(e) {
-    e.preventDefault()
-    try {
-      const d = await api('/api/admin/login', { method: 'POST', body: { email, password } })
-      onLogin(d)
-    } catch (err) { setError(err.message) }
-  }
-  return (
-    <form className="card narrow login" onSubmit={submit}>
-      <h2>Support team sign in</h2>
-      <label>Email<input value={email} onChange={(e) => setEmail(e.target.value)} /></label>
-      <label>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
-      {error && <p className="error">{error}</p>}
-      <button>Sign in</button>
-    </form>
-  )
+const NAV = [
+  ['Agent', ['Overview', 'Setup', 'Actions', 'Knowledge', 'Playground']],
+  ['Support', ['Handoffs', 'Approvals', 'Conversations', 'Security']],
+]
+const ABOUT = {
+  Overview: 'How your agent is doing across all conversations.',
+  Setup: 'Your API key, webhook secret and what the agent knows about your business.',
+  Actions: 'What your agent may do in your app. Each action calls an endpoint on your backend, after the security engine has approved it.',
+  Knowledge: 'Troubleshooting guides, FAQs and policies. The agent answers from these, together with what it looks up in your app.',
+  Playground: 'Chat with your agent as one of your customers and see what it decides on each turn.',
+  Handoffs: 'Conversations the agent passed to your team, with the reason and a summary.',
+  Approvals: 'Actions waiting for a person to approve or reject.',
+  Conversations: 'Every conversation, with its messages and the audit log of actions.',
+  Security: 'Suspected prompt-injection attempts and the actions that were blocked.',
 }
 
 function Bars({ data }) {
@@ -42,9 +38,9 @@ function Bars({ data }) {
   )
 }
 
-function Overview({ auth }) {
+function Overview({ auth, setTab }) {
   const [s, setS] = useState(null)
-  useEffect(() => { api('/api/admin/stats', { headers: auth }).then(setS) }, [auth])
+  useEffect(() => { api('/api/admin/stats', { headers: auth }).then(setS).catch(() => {}) }, [auth])
   if (!s) return <p className="muted">Loading…</p>
   const tiles = [
     ['Conversations', s.total_conversations], ['Resolved by AI', `${s.ai_resolution_rate}%`],
@@ -54,6 +50,18 @@ function Overview({ auth }) {
   ]
   return (
     <>
+      {!s.actions_configured && (
+        <div className="card notice">
+          <strong>Finish setting up your agent</strong>
+          <p className="muted">Your agent can chat, but it cannot look anything up or act yet. Connect your app by adding
+            actions, and add your troubleshooting guides so it can help customers properly.</p>
+          <div className="actions">
+            <button onClick={() => setTab('Actions')}>Add an action</button>
+            <button className="ghost" onClick={() => setTab('Knowledge')}>Add a guide</button>
+            <button className="ghost" onClick={() => setTab('Setup')}>View API key</button>
+          </div>
+        </div>
+      )}
       <div className="tiles">{tiles.map(([k, v]) => <div key={k} className="tile"><span>{k}</span><b>{v}</b></div>)}</div>
       <div className="grid2">
         <div className="card"><h3>Issue categories</h3><Bars data={s.conversations_by_category} /></div>
@@ -69,7 +77,7 @@ function Handoffs({ auth, open }) {
   const load = useCallback(() => api('/api/admin/handoffs', { headers: auth }).then(setRows), [auth])
   useEffect(() => { load() }, [load])
   const claim = async (id) => { await api(`/api/admin/handoffs/${id}/claim`, { method: 'POST', headers: auth }); load() }
-  if (!rows.length) return <p className="muted">No handoffs yet.</p>
+  if (!rows.length) return <div className="card empty">No handoffs yet. Conversations that need a person will appear here.</div>
   return rows.map((h) => (
     <div key={h.id} className={`card handoff ${h.priority}`}>
       <div className="row-head">
@@ -92,11 +100,18 @@ function Approvals({ auth }) {
   const [rows, setRows] = useState([])
   const load = useCallback(() => api('/api/admin/approvals', { headers: auth }).then(setRows), [auth])
   useEffect(() => { load() }, [load])
-  const decide = async (id, v) => { await api(`/api/admin/approvals/${id}/${v}`, { method: 'POST', headers: auth }); load() }
-  if (!rows.length) return <p className="muted">No actions waiting for approval.</p>
+  const [error, setError] = useState('')
+  const decide = async (id, v) => {
+    setError('')
+    try { await api(`/api/admin/approvals/${id}/${v}`, { method: 'POST', headers: auth }) } catch (e) { setError(e.message) }
+    load()
+  }
+  if (!rows.length) return <div className="card empty">No actions waiting for approval.</div>
   return rows.map((a) => (
     <div key={a.id} className="card">
+      {error && <p className="error">{error}</p>}
       <div className="row-head"><strong>{pretty(a.action)}</strong><span className="muted small">conversation #{a.conversation_id} · {fmtDate(a.at)}</span></div>
+      {a.summary && <p>{a.summary}</p>}
       <pre>{JSON.stringify(a.params, null, 2)}</pre>
       <p className="small muted">{a.reason}</p>
       <div className="actions">
@@ -189,7 +204,7 @@ function Conversations({ auth, open }) {
 function Security({ auth }) {
   const [rows, setRows] = useState([])
   useEffect(() => { api('/api/admin/security-events', { headers: auth }).then(setRows) }, [auth])
-  if (!rows.length) return <p className="muted">No security events recorded.</p>
+  if (!rows.length) return <div className="card empty">No security events recorded.</div>
   return (
     <div className="card table-wrap">
       <table>
@@ -203,29 +218,50 @@ function Security({ auth }) {
   )
 }
 
-export default function Admin() {
-  const [session, setSession] = useState(() => {
-    try { return JSON.parse(sessionStorage.getItem('admin') || 'null') } catch { return null }
-  })
+export default function Dashboard({ session, onExpired }) {
   const [tab, setTab] = useState('Overview')
   const [openId, setOpenId] = useState(null)
-  const login = (d) => { setSession(d); try { sessionStorage.setItem('admin', JSON.stringify(d)) } catch { /* ignore */ } }
-  const logout = () => { setSession(null); try { sessionStorage.removeItem('admin') } catch { /* ignore */ } }
-  if (!session) return <Login onLogin={login} />
-  const auth = { Authorization: `Bearer ${session.token}` }
+  const auth = useMemo(() => ({ Authorization: `Bearer ${session.token}` }), [session.token])
+  // any dashboard call answered with 401 means the sign-in has expired
+  useEffect(() => {
+    window.addEventListener('sanctio:unauthorized', onExpired)
+    return () => window.removeEventListener('sanctio:unauthorized', onExpired)
+  }, [onExpired])
+  // counts shown next to the queues that need a person; refreshed whenever the page changes
+  const [counts, setCounts] = useState({})
+  useEffect(() => {
+    api('/api/admin/stats', { headers: auth })
+      .then((s) => setCounts({ Handoffs: s.open_handoffs, Approvals: s.pending_approvals })).catch(() => {})
+  }, [auth, tab])
   const open = (id) => { setOpenId(id); setTab('Conversations') }
   return (
-    <div>
-      <div className="tabs">
-        {TABS.map((t) => <button key={t} className={tab === t ? 'active' : ''} onClick={() => { setTab(t); setOpenId(null) }}>{t}</button>)}
-        <span className="spacer" /><span className="muted small">{session.name}</span>
-        <button className="ghost" onClick={logout}>Sign out</button>
-      </div>
-      {tab === 'Overview' && <Overview auth={auth} />}
+    <div className="dash">
+      <nav className="side" aria-label="Dashboard">
+        <div className="who"><strong>{session.business}</strong><span className="muted small">{session.name}</span></div>
+        {NAV.map(([group, items]) => (
+          <React.Fragment key={group}>
+            <div className="group">{group}</div>
+            {items.map((t) => (
+              <button key={t} className={tab === t ? 'active' : ''} aria-current={tab === t ? 'page' : undefined}
+                onClick={() => { setTab(t); setOpenId(null) }}>
+                {t}{counts[t] > 0 && <span className="badge">{counts[t]}</span>}
+              </button>
+            ))}
+          </React.Fragment>
+        ))}
+      </nav>
+      <div>
+      <header className="page-head"><h2>{tab}</h2><p>{ABOUT[tab]}</p></header>
+      {tab === 'Overview' && <Overview auth={auth} setTab={setTab} />}
+      {tab === 'Setup' && <Setup auth={auth} newApiKey={session.newApiKey} />}
+      {tab === 'Actions' && <Actions auth={auth} />}
+      {tab === 'Knowledge' && <Knowledge auth={auth} />}
+      {tab === 'Playground' && <Playground auth={auth} />}
       {tab === 'Handoffs' && <Handoffs auth={auth} open={open} />}
       {tab === 'Approvals' && <Approvals auth={auth} />}
       {tab === 'Conversations' && (openId ? <ConversationDetail auth={auth} id={openId} back={() => setOpenId(null)} /> : <Conversations auth={auth} open={open} />)}
       {tab === 'Security' && <Security auth={auth} />}
+      </div>
     </div>
   )
 }

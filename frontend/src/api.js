@@ -5,6 +5,7 @@ export async function api(path, { method = 'GET', body, headers = {} } = {}) {
     body: body ? JSON.stringify(body) : undefined,
   })
   const data = await res.json().catch(() => ({}))
+  if (res.status === 401 && path.startsWith('/api/admin')) window.dispatchEvent(new Event('sanctio:unauthorized'))
   if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`)
   return data
 }

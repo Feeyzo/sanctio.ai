@@ -1,7 +1,7 @@
 """Database models (see the ER diagram in Chapter 3)."""
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -16,19 +16,50 @@ class Business(Base):
     __tablename__ = "businesses"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str] = mapped_column(Text, default="")  # what the business does; given to the agent
     api_key_hash: Mapped[str] = mapped_column(String(128), unique=True)
-    allowed_actions: Mapped[str] = mapped_column(Text)  # comma-separated allowlist
+    api_key_prefix: Mapped[str] = mapped_column(String(16), default="")  # shown in the dashboard to identify the key
+    webhook_secret: Mapped[str] = mapped_column(String(80))  # signs requests sent to the business's backend
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class Action(Base):
+    """Something the agent may do in the business's app, executed by calling the business's own endpoint."""
+    __tablename__ = "actions"
+    __table_args__ = (UniqueConstraint("business_id", "name"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"))
+    name: Mapped[str] = mapped_column(String(48))
+    description: Mapped[str] = mapped_column(Text)
+    params: Mapped[str] = mapped_column(Text, default="[]")  # JSON list of {name, type, description, required, pattern}
+    url: Mapped[str] = mapped_column(String(500))
+    mutates: Mapped[bool] = mapped_column(Boolean, default=False)  # changes data -> preview + customer confirmation
+    risk: Mapped[str] = mapped_column(String(8), default="low")  # low|medium|high
+    approval: Mapped[str] = mapped_column(String(16), default="never")  # never|always|over_amount
+    approval_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class KnowledgeArticle(Base):
+    """Troubleshooting guides, FAQs and policies the agent answers from."""
+    __tablename__ = "knowledge_articles"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"))
+    title: Mapped[str] = mapped_column(String(160))
+    content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class Customer(Base):
+    """A business's customer, created the first time the business opens a session for them."""
     __tablename__ = "customers"
+    __table_args__ = (UniqueConstraint("business_id", "external_id"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"))
     external_id: Mapped[str] = mapped_column(String(64))  # customer id in the business's own system
-    name: Mapped[str] = mapped_column(String(120))
-    email: Mapped[str] = mapped_column(String(160))
-    phone: Mapped[str] = mapped_column(String(32), default="")
+    name: Mapped[str] = mapped_column(String(120), default="")
+    email: Mapped[str] = mapped_column(String(160), default="")
 
 
 class CustomerSession(Base):
@@ -44,21 +75,6 @@ class CustomerSession(Base):
     customer: Mapped[Customer] = relationship()
 
 
-class Order(Base):
-    """Simulated business data the agent can act on."""
-    __tablename__ = "orders"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    order_ref: Mapped[str] = mapped_column(String(32), unique=True)
-    customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"))
-    item: Mapped[str] = mapped_column(String(160))
-    amount: Mapped[float] = mapped_column(Float)
-    status: Mapped[str] = mapped_column(String(32))  # pending|processing|shipped|delivered|cancelled|refunded
-    payment_status: Mapped[str] = mapped_column(String(32), default="paid")
-    shipping_address: Mapped[str] = mapped_column(String(255))
-    expected_delivery: Mapped[str] = mapped_column(String(32), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
-
-
 class Conversation(Base):
     __tablename__ = "conversations"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -69,6 +85,7 @@ class Conversation(Base):
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
     resolved_by_ai: Mapped[bool] = mapped_column(Boolean, default=False)
     last_sentiment: Mapped[float] = mapped_column(Float, default=0.0)
+    state: Mapped[str] = mapped_column(Text, default="{}")  # JSON scratch space for the rule-based engine
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
     customer: Mapped[Customer] = relationship()
@@ -95,7 +112,9 @@ class ActionLog(Base):
     conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id"))
     action: Mapped[str] = mapped_column(String(48))
     params: Mapped[str] = mapped_column(Text)
-    decision: Mapped[str] = mapped_column(String(24))  # executed|denied|pending_approval|approved|rejected|failed
+    # awaiting_confirmation|executed|denied|failed|pending_approval|approved|rejected|declined_by_customer|expired
+    decision: Mapped[str] = mapped_column(String(24))
+    summary: Mapped[str] = mapped_column(Text, default="")  # what the business said the action would do
     reason: Mapped[str] = mapped_column(Text, default="")
     result: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)

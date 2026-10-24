@@ -1,8 +1,10 @@
-"""FastAPI application: integration API, admin API and the demo front-end."""
+"""FastAPI application: integration API, business dashboard API and the website."""
 import json
 import os
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,27 +14,26 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from . import agent
-from .config import DEMO_API_KEY, LLM_PROVIDER
-from .db import SessionLocal, get_db
-from .models import (ActionLog, AdminUser, Business, Conversation, Customer, CustomerSession, Handoff,
-                     Message, Order, SecurityEvent, now)
-from .security import (issue_session, make_admin_token, require_admin, require_business, require_session,
-                       verify_password)
-from .seed import init_db
-from .tools import REGISTRY, to_json
+from . import agent, connectors, policy
+from .config import LLM_PROVIDER
+from .db import Base, engine, get_db
+from .models import (Action, ActionLog, AdminUser, Business, Conversation, Customer, CustomerSession, Handoff,
+                     KnowledgeArticle, Message, SecurityEvent, now)
+from .security import (hash_password, issue_session, make_admin_token, new_api_key, new_webhook_secret,
+                       require_admin, require_business, require_session, sha256, verify_password)
 
-DEMO_MODE = os.getenv("DEMO_MODE", "1") == "1"
+STATIC = Path(__file__).resolve().parent / "static"
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    with SessionLocal() as db:
-        init_db(db)
+    Base.metadata.create_all(engine)
     yield
 
 
-app = FastAPI(title="Secure AI Customer Service Agent API", version="1.0.0", lifespan=lifespan,
+app = FastAPI(title="Sanctio — Secure AI Customer Service Agent API", version="2.0.0", lifespan=lifespan,
+              docs_url="/api/docs", redoc_url=None, openapi_url="/api/openapi.json",
               description="Customer-service agent with verified action execution and sentiment-aware human handoff.")
 app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
                    allow_methods=["*"], allow_headers=["*"])
@@ -44,13 +45,11 @@ async def agent_error(_, exc: agent.AgentError):
 
 
 # ------------------------------------------------------------------ schemas
-class SessionIn(BaseModel):
-    customer_external_id: str = Field(..., max_length=64)
-
-
-class ChatIn(BaseModel):
-    message: str = Field(..., max_length=2000)
-    conversation_id: int | None = None
+class SignupIn(BaseModel):
+    business_name: str = Field(..., min_length=2, max_length=120)
+    name: str = Field(..., min_length=1, max_length=120)
+    email: str = Field(..., max_length=160)
+    password: str = Field(..., min_length=8, max_length=200)
 
 
 class LoginIn(BaseModel):
@@ -58,8 +57,54 @@ class LoginIn(BaseModel):
     password: str
 
 
+class SessionIn(BaseModel):
+    customer_id: str = Field(..., min_length=1, max_length=64)
+    customer_name: str = Field("", max_length=120)
+    customer_email: str = Field("", max_length=160)
+
+
+class ChatIn(BaseModel):
+    message: str = Field(..., max_length=2000)
+    conversation_id: int | None = None
+
+
 class HumanReplyIn(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
+
+
+class BusinessIn(BaseModel):
+    name: str = Field(..., min_length=2, max_length=120)
+    description: str = Field("", max_length=2000)
+
+
+class ParamIn(BaseModel):
+    name: str = Field(..., max_length=48)
+    type: Literal["string", "number", "integer", "boolean"] = "string"
+    description: str = Field("", max_length=200)
+    required: bool = True
+    pattern: str = Field("", max_length=80)
+
+
+class ActionIn(BaseModel):
+    name: str = Field(..., max_length=48)
+    description: str = Field(..., min_length=3, max_length=500)
+    url: str = Field(..., max_length=500)
+    params: list[ParamIn] = Field(default_factory=list, max_length=8)
+    mutates: bool = False
+    risk: Literal["low", "medium", "high"] = "low"
+    approval: Literal["never", "always", "over_amount"] = "never"
+    approval_amount: float | None = Field(None, ge=0)
+    enabled: bool = True
+
+
+class ActionTestIn(BaseModel):
+    customer_id: str = Field(..., min_length=1, max_length=64)
+    params: dict = Field(default_factory=dict)
+
+
+class ArticleIn(BaseModel):
+    title: str = Field(..., min_length=2, max_length=160)
+    content: str = Field(..., min_length=5, max_length=6000)
 
 
 # ------------------------------------------------------- integration API (v1)
@@ -71,10 +116,15 @@ def health():
 @app.post("/api/v1/sessions", tags=["integration"])
 def create_session(body: SessionIn, business: Business = Depends(require_business), db: Session = Depends(get_db)):
     """Called by the business's own backend after it has authenticated its customer."""
-    customer = db.query(Customer).filter_by(business_id=business.id, external_id=body.customer_external_id).first()
+    external_id = body.customer_id.strip()
+    customer = db.query(Customer).filter_by(business_id=business.id, external_id=external_id).first()
     if not customer:
-        raise HTTPException(404, "Customer not found")
-    return {"session_token": issue_session(db, business.id, customer.id), "customer_name": customer.name}
+        customer = Customer(business_id=business.id, external_id=external_id)
+        db.add(customer)
+    customer.name = body.customer_name.strip() or customer.name or ""
+    customer.email = body.customer_email.strip() or customer.email or ""
+    db.flush()
+    return {"session_token": issue_session(db, business.id, customer.id), "customer_id": external_id}
 
 
 @app.delete("/api/v1/sessions", tags=["integration"])
@@ -85,9 +135,8 @@ def revoke_session(sess: CustomerSession = Depends(require_session), db: Session
 
 
 @app.post("/api/v1/chat", tags=["integration"])
-def chat(body: ChatIn, business: Business = Depends(require_business),
-         sess: CustomerSession = Depends(require_session), db: Session = Depends(get_db)):
-    return agent.handle_message(db, business, sess, body.message, body.conversation_id)
+def chat(body: ChatIn, sess: CustomerSession = Depends(require_session), db: Session = Depends(get_db)):
+    return agent.handle_message(db, db.get(Business, sess.business_id), sess, body.message, body.conversation_id)
 
 
 @app.get("/api/v1/conversations/{conv_id}", tags=["integration"])
@@ -99,16 +148,210 @@ def get_conversation(conv_id: int, sess: CustomerSession = Depends(require_sessi
             "messages": [{"sender": m.sender, "content": m.content, "at": m.created_at} for m in conv.messages]}
 
 
-# --------------------------------------------------------------- admin API
-@app.post("/api/admin/login", tags=["admin"])
-def admin_login(body: LoginIn, db: Session = Depends(get_db)):
+@app.get("/widget.js", include_in_schema=False)
+def widget():
+    return FileResponse(STATIC / "widget.js", media_type="application/javascript")
+
+
+# ------------------------------------------------------- accounts
+@app.post("/api/auth/signup", tags=["account"])
+def signup(body: SignupIn, db: Session = Depends(get_db)):
+    """Create a business and its first team member. The API key is returned once, here."""
+    email = body.email.strip().lower()
+    if not EMAIL_RE.match(email):
+        raise HTTPException(422, "Enter a valid email address")
+    if db.query(AdminUser).filter_by(email=email).first():
+        raise HTTPException(409, "An account with that email already exists")
+    api_key = new_api_key()
+    business = Business(name=body.business_name.strip(), api_key_hash=sha256(api_key), api_key_prefix=api_key[:12],
+                        webhook_secret=new_webhook_secret())
+    db.add(business)
+    db.flush()
+    admin = AdminUser(business_id=business.id, email=email, password_hash=hash_password(body.password),
+                      name=body.name.strip())
+    db.add(admin)
+    db.commit()
+    return {"token": make_admin_token(admin.id), "name": admin.name, "business": business.name, "api_key": api_key}
+
+
+@app.post("/api/auth/login", tags=["account"])
+def login(body: LoginIn, db: Session = Depends(get_db)):
     admin = db.query(AdminUser).filter_by(email=body.email.strip().lower()).first()
     if not admin or not verify_password(body.password, admin.password_hash):
         raise HTTPException(401, "Invalid email or password")
-    return {"token": make_admin_token(admin.id), "name": admin.name}
+    return {"token": make_admin_token(admin.id), "name": admin.name, "business": db.get(Business, admin.business_id).name}
 
 
-@app.get("/api/admin/stats", tags=["admin"])
+# ------------------------------------------------------- dashboard: setup
+def _business_view(b: Business) -> dict:
+    return {"name": b.name, "description": b.description, "api_key_prefix": b.api_key_prefix,
+            "webhook_secret": b.webhook_secret, "llm_provider": LLM_PROVIDER}
+
+
+@app.get("/api/admin/business", tags=["dashboard"])
+def get_business(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    return _business_view(db.get(Business, admin.business_id))
+
+
+@app.put("/api/admin/business", tags=["dashboard"])
+def update_business(body: BusinessIn, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    business = db.get(Business, admin.business_id)
+    business.name, business.description = body.name.strip(), body.description.strip()
+    db.commit()
+    return _business_view(business)
+
+
+@app.post("/api/admin/business/rotate-api-key", tags=["dashboard"])
+def rotate_api_key(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    """Replaces the API key. The old key stops working immediately; the new one is shown once."""
+    business = db.get(Business, admin.business_id)
+    api_key = new_api_key()
+    business.api_key_hash, business.api_key_prefix = sha256(api_key), api_key[:12]
+    db.commit()
+    return {"api_key": api_key}
+
+
+@app.post("/api/admin/business/rotate-webhook-secret", tags=["dashboard"])
+def rotate_webhook_secret(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    business = db.get(Business, admin.business_id)
+    business.webhook_secret = new_webhook_secret()
+    db.commit()
+    return _business_view(business)
+
+
+# ------------------------------------------------------- dashboard: actions
+def _action_view(a: Action) -> dict:
+    return {"id": a.id, "name": a.name, "description": a.description, "url": a.url, "params": json.loads(a.params),
+            "mutates": a.mutates, "risk": a.risk, "approval": a.approval, "approval_amount": a.approval_amount,
+            "enabled": a.enabled}
+
+
+def _own_action(db: Session, admin: AdminUser, action_id: int) -> Action:
+    action = db.get(Action, action_id)
+    if not action or action.business_id != admin.business_id:
+        raise HTTPException(404, "Action not found")
+    return action
+
+
+def _apply_action(db: Session, admin: AdminUser, action: Action, body: ActionIn):
+    name = body.name.strip()
+    if not policy.NAME_RE.match(name):
+        raise HTTPException(422, "Action name must be lowercase letters, digits and underscores, e.g. track_shipment")
+    clash = db.query(Action).filter_by(business_id=admin.business_id, name=name).first()
+    if clash and clash.id != action.id:
+        raise HTTPException(409, "You already have an action with that name")
+    params = [p.model_dump() for p in body.params]
+    problem = policy.validate_spec(params) or connectors.check_url(body.url.strip())
+    # patterns run against customer text, so refuse the nested-quantifier shapes that can hang a regex engine
+    if not problem and any(re.search(r"[)\]][+*}][+*{?]|\)[+*{]", p["pattern"]) for p in params):
+        problem = "Parameter patterns may not use repeated groups"
+    if not problem and body.approval != "never" and not body.mutates:
+        problem = "Only data-changing actions can require approval"
+    if not problem and body.approval == "over_amount" and body.approval_amount is None:
+        problem = "Set the amount above which a human must approve"
+    if problem:
+        raise HTTPException(422, problem)
+    action.name, action.description, action.url = name, body.description.strip(), body.url.strip()
+    action.params, action.mutates, action.risk = json.dumps(params), body.mutates, body.risk
+    action.approval, action.enabled = body.approval, body.enabled
+    action.approval_amount = body.approval_amount if body.approval == "over_amount" else None
+    db.commit()
+    return _action_view(action)
+
+
+@app.get("/api/admin/actions", tags=["dashboard"])
+def list_actions(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    return [_action_view(a) for a in db.query(Action).filter_by(business_id=admin.business_id).order_by(Action.id)]
+
+
+@app.post("/api/admin/actions", tags=["dashboard"])
+def create_action(body: ActionIn, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    if db.query(Action).filter_by(business_id=admin.business_id).count() >= 30:
+        raise HTTPException(422, "Action limit reached (30)")
+    action = Action(business_id=admin.business_id)
+    db.add(action)
+    return _apply_action(db, admin, action, body)
+
+
+@app.put("/api/admin/actions/{action_id}", tags=["dashboard"])
+def update_action(action_id: int, body: ActionIn, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    return _apply_action(db, admin, _own_action(db, admin, action_id), body)
+
+
+@app.delete("/api/admin/actions/{action_id}", tags=["dashboard"])
+def delete_action(action_id: int, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    db.delete(_own_action(db, admin, action_id))
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/admin/actions/{action_id}/test", tags=["dashboard"])
+def test_action(action_id: int, body: ActionTestIn, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    """Sends a signed request to the action's endpoint so an integration can be checked.
+    Data-changing actions are only ever sent as a dry run from here."""
+    action = _own_action(db, admin, action_id)
+    clean, problem = policy.check_params(json.loads(action.params), body.params)
+    if clean is None:
+        raise HTTPException(422, problem)
+    r = connectors.call_action(db.get(Business, admin.business_id), action, body.customer_id.strip(), clean,
+                               dry_run=action.mutates)
+    warnings = []
+    if action.mutates and r.ok and not r.dry_run_echoed:
+        warnings.append('The response did not include "dry_run": true. Your endpoint must not change anything '
+                        "when dry_run is true, and must echo it back, or the agent will refuse to use this action.")
+    if action.approval == "over_amount" and r.ok and r.amount is None:
+        warnings.append('The response has no numeric "amount", so every request will be sent for human approval.')
+    return {"ok": r.ok, "unreachable": r.unreachable, "error": r.error, "summary": r.summary, "amount": r.amount,
+            "data": r.data, "dry_run": action.mutates, "warnings": warnings}
+
+
+# ------------------------------------------------------- dashboard: knowledge base
+def _own_article(db: Session, admin: AdminUser, article_id: int) -> KnowledgeArticle:
+    article = db.get(KnowledgeArticle, article_id)
+    if not article or article.business_id != admin.business_id:
+        raise HTTPException(404, "Article not found")
+    return article
+
+
+@app.get("/api/admin/knowledge", tags=["dashboard"])
+def list_articles(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    rows = db.query(KnowledgeArticle).filter_by(business_id=admin.business_id).order_by(KnowledgeArticle.id)
+    return [{"id": k.id, "title": k.title, "content": k.content} for k in rows]
+
+
+@app.post("/api/admin/knowledge", tags=["dashboard"])
+def create_article(body: ArticleIn, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    if db.query(KnowledgeArticle).filter_by(business_id=admin.business_id).count() >= 30:
+        raise HTTPException(422, "Article limit reached (30)")
+    article = KnowledgeArticle(business_id=admin.business_id, title=body.title.strip(), content=body.content.strip())
+    db.add(article)
+    db.commit()
+    return {"id": article.id, "title": article.title, "content": article.content}
+
+
+@app.put("/api/admin/knowledge/{article_id}", tags=["dashboard"])
+def update_article(article_id: int, body: ArticleIn, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    article = _own_article(db, admin, article_id)
+    article.title, article.content = body.title.strip(), body.content.strip()
+    db.commit()
+    return {"id": article.id, "title": article.title, "content": article.content}
+
+
+@app.delete("/api/admin/knowledge/{article_id}", tags=["dashboard"])
+def delete_article(article_id: int, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    db.delete(_own_article(db, admin, article_id))
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/admin/playground/session", tags=["dashboard"])
+def playground_session(body: SessionIn, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    """Lets a team member chat with their own agent as one of their customers, from the dashboard."""
+    return create_session(body, db.get(Business, admin.business_id), db)
+
+
+# ------------------------------------------------------- dashboard: operations
+@app.get("/api/admin/stats", tags=["dashboard"])
 def stats(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
     convs = db.query(Conversation).filter_by(business_id=admin.business_id)
     total = convs.count()
@@ -134,12 +377,18 @@ def stats(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_d
         "actions_by_decision": by_decision, "conversations_by_category": by_category,
         "handoff_reasons": reasons, "average_sentiment": round(avg_sent or 0, 3),
         "security_events": db.query(SecurityEvent).filter(SecurityEvent.conversation_id.in_(ids)).count() if ids else 0,
+        "actions_configured": db.query(Action).filter_by(business_id=admin.business_id).count(),
+        "articles_configured": db.query(KnowledgeArticle).filter_by(business_id=admin.business_id).count(),
     }
+
+
+def _customer_label(c: Customer) -> str:
+    return c.name or c.external_id
 
 
 def _conv_summary(c: Conversation) -> dict:
     last = c.messages[-1].content if c.messages else ""
-    return {"id": c.id, "customer": c.customer.name, "status": c.status, "category": c.category,
+    return {"id": c.id, "customer": _customer_label(c.customer), "status": c.status, "category": c.category,
             "sentiment": c.last_sentiment, "failed_attempts": c.failed_attempts, "resolved_by_ai": c.resolved_by_ai,
             "messages": len(c.messages), "last_message": last[:120], "updated_at": c.updated_at}
 
@@ -151,7 +400,7 @@ def _own_conversation(db: Session, admin: AdminUser, conv_id: int) -> Conversati
     return conv
 
 
-@app.get("/api/admin/conversations", tags=["admin"])
+@app.get("/api/admin/conversations", tags=["dashboard"])
 def list_conversations(status: str | None = None, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
     q = db.query(Conversation).filter_by(business_id=admin.business_id)
     if status:
@@ -159,20 +408,20 @@ def list_conversations(status: str | None = None, admin: AdminUser = Depends(req
     return [_conv_summary(c) for c in q.order_by(Conversation.updated_at.desc()).limit(100).all()]
 
 
-@app.get("/api/admin/conversations/{conv_id}", tags=["admin"])
+@app.get("/api/admin/conversations/{conv_id}", tags=["dashboard"])
 def conversation_detail(conv_id: int, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
     conv = _own_conversation(db, admin, conv_id)
-    return {**_conv_summary(conv), "customer_email": conv.customer.email,
+    return {**_conv_summary(conv), "customer_email": conv.customer.email, "customer_id": conv.customer.external_id,
             "messages": [{"id": m.id, "sender": m.sender, "content": m.content, "sentiment": m.sentiment,
                           "intent": m.intent, "confidence": m.confidence, "at": m.created_at} for m in conv.messages],
             "actions": [{"id": a.id, "action": a.action, "params": json.loads(a.params), "decision": a.decision,
-                         "reason": a.reason, "at": a.created_at}
+                         "reason": a.reason, "summary": a.summary, "at": a.created_at}
                         for a in db.query(ActionLog).filter_by(conversation_id=conv.id).order_by(ActionLog.id)],
             "handoffs": [{"id": h.id, "reasons": h.reasons.split(","), "summary": h.summary, "status": h.status,
                           "priority": h.priority} for h in db.query(Handoff).filter_by(conversation_id=conv.id)]}
 
 
-@app.post("/api/admin/conversations/{conv_id}/reply", tags=["admin"])
+@app.post("/api/admin/conversations/{conv_id}/reply", tags=["dashboard"])
 def human_reply(conv_id: int, body: HumanReplyIn, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
     conv = _own_conversation(db, admin, conv_id)
     db.add(Message(conversation_id=conv.id, sender="human", content=f"{body.message}\n— {admin.name}"))
@@ -181,7 +430,7 @@ def human_reply(conv_id: int, body: HumanReplyIn, admin: AdminUser = Depends(req
     return {"ok": True}
 
 
-@app.post("/api/admin/conversations/{conv_id}/resolve", tags=["admin"])
+@app.post("/api/admin/conversations/{conv_id}/resolve", tags=["dashboard"])
 def resolve_conversation(conv_id: int, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
     conv = _own_conversation(db, admin, conv_id)
     conv.status = "resolved"
@@ -191,16 +440,16 @@ def resolve_conversation(conv_id: int, admin: AdminUser = Depends(require_admin)
     return {"ok": True}
 
 
-@app.get("/api/admin/handoffs", tags=["admin"])
+@app.get("/api/admin/handoffs", tags=["dashboard"])
 def list_handoffs(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
     rows = (db.query(Handoff).join(Conversation).filter(Conversation.business_id == admin.business_id)
             .order_by(Handoff.status != "open", Handoff.priority != "high", Handoff.id.desc()).limit(100).all())
-    return [{"id": h.id, "conversation_id": h.conversation_id, "customer": h.conversation.customer.name,
+    return [{"id": h.id, "conversation_id": h.conversation_id, "customer": _customer_label(h.conversation.customer),
              "reasons": h.reasons.split(","), "priority": h.priority, "status": h.status,
              "assigned_to": h.assigned_to, "summary": h.summary, "created_at": h.created_at} for h in rows]
 
 
-@app.post("/api/admin/handoffs/{handoff_id}/claim", tags=["admin"])
+@app.post("/api/admin/handoffs/{handoff_id}/claim", tags=["dashboard"])
 def claim_handoff(handoff_id: int, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
     h = db.get(Handoff, handoff_id)
     if not h or h.conversation.business_id != admin.business_id:
@@ -210,15 +459,15 @@ def claim_handoff(handoff_id: int, admin: AdminUser = Depends(require_admin), db
     return {"ok": True}
 
 
-@app.get("/api/admin/approvals", tags=["admin"])
+@app.get("/api/admin/approvals", tags=["dashboard"])
 def pending_approvals(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
     rows = (db.query(ActionLog).join(Conversation, ActionLog.conversation_id == Conversation.id)
             .filter(Conversation.business_id == admin.business_id, ActionLog.decision == "pending_approval").all())
     return [{"id": a.id, "conversation_id": a.conversation_id, "action": a.action, "params": json.loads(a.params),
-             "reason": a.reason, "at": a.created_at} for a in rows]
+             "reason": a.reason, "summary": a.summary, "at": a.created_at} for a in rows]
 
 
-@app.post("/api/admin/approvals/{action_id}/{verdict}", tags=["admin"])
+@app.post("/api/admin/approvals/{action_id}/{verdict}", tags=["dashboard"])
 def decide_approval(action_id: int, verdict: str, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
     if verdict not in ("approve", "reject"):
         raise HTTPException(400, "Verdict must be approve or reject")
@@ -226,24 +475,36 @@ def decide_approval(action_id: int, verdict: str, admin: AdminUser = Depends(req
     if not log or log.decision != "pending_approval":
         raise HTTPException(404, "No pending approval with that id")
     conv = _own_conversation(db, admin, log.conversation_id)
-    params = json.loads(log.params)
+    label = log.action.replace("_", " ")
     if verdict == "reject":
         log.decision, log.reason = "rejected", f"Rejected by {admin.name}"
-        text = f"After review, our team could not approve the {log.action.replace('_', ' ')} for {params.get('order_ref')}."
+        text = f"After review, our team could not approve your {label} request."
     else:
-        order = db.query(Order).filter_by(order_ref=params.get("order_ref"), customer_id=conv.customer_id).first()
-        if not order:
-            raise HTTPException(409, "Order no longer valid for this customer")
-        kwargs = {k: v for k, v in params.items() if k != "order_ref"}
-        result = REGISTRY[log.action].handler(db, conv.customer_id, order=order, **kwargs)
-        log.decision, log.reason, log.result = "approved", f"Approved by {admin.name}", to_json(result)
-        text = f"Good news — your {log.action.replace('_', ' ')} for {params.get('order_ref')} has been approved and processed."
+        business = db.get(Business, admin.business_id)
+        action = policy.get_action(db, business, log.action)
+        clean, problem = policy.check_params(json.loads(action.params), json.loads(log.params)) if action else (None, "")
+        if clean is None:
+            raise HTTPException(409, problem or "This action is no longer available")
+        # check it is still valid for this customer, then run it with the customer id from the conversation
+        customer_id = conv.customer.external_id
+        result = connectors.call_action(business, action, customer_id, clean, dry_run=True, conversation_id=conv.id)
+        if result.ok and result.dry_run_echoed:
+            result = connectors.call_action(business, action, customer_id, clean, dry_run=False, conversation_id=conv.id)
+        elif result.ok:
+            raise HTTPException(409, "The business endpoint did not acknowledge the dry run")
+        if not result.ok:
+            raise HTTPException(409, result.error)
+        log.decision, log.reason = "approved", f"Approved by {admin.name}"
+        log.result = agent.to_json({"summary": result.summary, "data": result.data})
+        text = f"Good news — your {label} request has been approved and processed."
+        if result.summary:
+            text += f" {result.summary}"
     db.add(Message(conversation_id=conv.id, sender="human", content=f"{text}\n— {admin.name}"))
     db.commit()
     return {"ok": True, "decision": log.decision}
 
 
-@app.get("/api/admin/security-events", tags=["admin"])
+@app.get("/api/admin/security-events", tags=["dashboard"])
 def security_events(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
     rows = (db.query(SecurityEvent).join(Conversation).filter(Conversation.business_id == admin.business_id)
             .order_by(SecurityEvent.id.desc()).limit(100).all())
@@ -251,26 +512,7 @@ def security_events(admin: AdminUser = Depends(require_admin), db: Session = Dep
              "at": e.created_at} for e in rows]
 
 
-# ------------------------------------------------------------- demo helpers
-if DEMO_MODE:
-    @app.get("/api/demo/customers", tags=["demo"])
-    def demo_customers(db: Session = Depends(get_db)):
-        return [{"external_id": c.external_id, "name": c.name,
-                 "orders": [o.order_ref for o in db.query(Order).filter_by(customer_id=c.id)]}
-                for c in db.query(Customer).all()]
-
-    @app.post("/api/demo/start", tags=["demo"])
-    def demo_start(body: SessionIn, db: Session = Depends(get_db)):
-        """Simulates the store's backend: signs a demo customer in and returns a session."""
-        biz = db.query(Business).first()
-        customer = db.query(Customer).filter_by(business_id=biz.id, external_id=body.customer_external_id).first()
-        if not customer:
-            raise HTTPException(404, "Customer not found")
-        return {"session_token": issue_session(db, biz.id, customer.id), "api_key": DEMO_API_KEY,
-                "customer_name": customer.name}
-
-
-# -------------------------------------------------------------- front-end
+# -------------------------------------------------------------- website
 FRONTEND = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 if FRONTEND.exists():
     app.mount("/assets", StaticFiles(directory=FRONTEND / "assets"), name="assets")

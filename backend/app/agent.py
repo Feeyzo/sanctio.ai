@@ -8,14 +8,14 @@ import re
 
 from sqlalchemy.orm import Session
 
+from . import connectors
 from . import handoff as handoff_engine
 from . import policy, sentiment
-from .config import MAX_MESSAGE_LENGTH
-from .llm import get_engine
-from .models import (ActionLog, Business, Conversation, CustomerSession, Handoff, Message,
-                     SecurityEvent, now)
+from .config import LOW_CONFIDENCE_THRESHOLD, MAX_AGENT_STEPS, MAX_MESSAGE_LENGTH
+from .llm import Context, get_engine
+from .models import (Action, ActionLog, Business, Conversation, CustomerSession, Handoff, KnowledgeArticle,
+                     Message, SecurityEvent, now)
 from .security import detect_injection, sanitize_output
-from .tools import REGISTRY, describe_tools, to_json
 
 CONFIRM_RE = re.compile(r"^\s*(yes|y|confirm|confirmed|proceed|go ahead|ok(ay)?,? (do it|go ahead))\b", re.IGNORECASE)
 REJECT_RE = re.compile(r"^\s*(no|n|stop|don'?t|cancel that|never ?mind)\b", re.IGNORECASE)
@@ -24,6 +24,10 @@ REJECT_RE = re.compile(r"^\s*(no|n|stop|don'?t|cancel that|never ?mind)\b", re.I
 class AgentError(Exception):
     def __init__(self, status: int, detail: str):
         self.status, self.detail = status, detail
+
+
+def to_json(data) -> str:
+    return json.dumps(data, default=str)
 
 
 def _get_conversation(db: Session, session: CustomerSession, conversation_id: int | None) -> Conversation:
@@ -41,22 +45,46 @@ def _get_conversation(db: Session, session: CustomerSession, conversation_id: in
     return conv
 
 
-def _execute(db: Session, session: CustomerSession, action: str, params: dict, order) -> dict:
-    spec = REGISTRY[action]
-    kwargs = {k: v for k, v in params.items() if k != "order_ref"}
-    if order is not None:
-        kwargs["order"] = order
-    result = spec.handler(db, session.customer_id, **kwargs)
-    if spec.mutates:
+def _context(db: Session, business: Business, conv: Conversation) -> Context:
+    actions = db.query(Action).filter_by(business_id=business.id, enabled=True).order_by(Action.id).all()
+    articles = db.query(KnowledgeArticle).filter_by(business_id=business.id).order_by(KnowledgeArticle.id).limit(30).all()
+    return Context(
+        business=business.name, description=business.description,
+        actions=[{"name": a.name, "description": a.description, "params": json.loads(a.params), "mutates": a.mutates}
+                 for a in actions],
+        articles=[{"title": k.title, "content": k.content} for k in articles],
+        state=json.loads(conv.state or "{}"))
+
+
+def execute(db: Session, business: Business, session: CustomerSession, decision: policy.Decision,
+            conversation_id: int) -> connectors.ActionResult:
+    """Run an action the policy engine has cleared, with the customer id from the verified session."""
+    result = connectors.call_action(business, decision.action, session.customer.external_id, decision.params,
+                                    dry_run=False, conversation_id=conversation_id)
+    if result.ok and decision.action.mutates:
         session.action_count += 1
     return result
 
 
-def _summary(conv: Conversation, reasons: list[str], last_action: str | None) -> str:
+def _record_result(log: ActionLog, result: connectors.ActionResult) -> str:
+    """Store the outcome of a call on the audit log and return the outcome name."""
+    if result.ok:
+        log.decision, log.result = "executed", to_json({"summary": result.summary, "data": result.data})
+    elif result.unreachable:
+        log.decision, log.reason = "failed", result.error
+    else:
+        log.decision, log.reason = "denied", result.error
+    return log.decision
+
+
+def _summary(db: Session, conv: Conversation, reasons: list[str]) -> str:
     msgs = [m for m in conv.messages if m.sender == "customer"][-4:]
     quoted = " | ".join(m.content[:140] for m in msgs)
-    return (f"Customer: {conv.customer.name} ({conv.customer.email}). Category: {conv.category}. "
-            f"Triggers: {', '.join(reasons)}. Last action: {last_action or 'none'}. "
+    logs = db.query(ActionLog).filter_by(conversation_id=conv.id).order_by(ActionLog.id.desc()).limit(4).all()
+    actions = "; ".join(f"{a.action} ({a.decision})" for a in reversed(logs)) or "none"
+    who = conv.customer.name or conv.customer.external_id
+    return (f"Customer: {who} ({conv.customer.email or conv.customer.external_id}). Category: {conv.category}. "
+            f"Triggers: {', '.join(reasons)}. Actions: {actions}. "
             f"Failed attempts: {conv.failed_attempts}. Recent customer messages: {quoted}")
 
 
@@ -91,42 +119,87 @@ def handle_message(db: Session, business: Business, session: CustomerSession, te
 
     engine = get_engine()
     response["engine"] = engine.name
-    action_info, needs_approval, last_action = None, False, None
+    action_info, needs_approval = None, False
+
+    def blocked(action: str, reason: str):
+        conv.failed_attempts += 1
+        if injections:
+            db.add(SecurityEvent(conversation_id=conv.id, event_type="action_blocked",
+                                 detail=json.dumps({"action": action, "reason": reason})))
+
+    def settle(log: ActionLog, decision: policy.Decision, confirmed: bool) -> str:
+        """Apply a policy decision to an audit-log row and return the reply for it."""
+        nonlocal needs_approval
+        log.reason = decision.reason
+        if decision.preview:
+            log.summary = decision.preview.summary
+        params = decision.params or json.loads(log.params)
+        if decision.status == "allowed" or (decision.status == "needs_confirmation" and confirmed):
+            result = execute(db, business, session, decision, conv.id)
+            outcome = _record_result(log, result)
+            if outcome != "executed":
+                blocked(log.action, log.reason)
+            elif decision.action.mutates:
+                conv.resolved_by_ai = True
+            return engine.compose(log.action, outcome, result, log.reason, params)
+        if decision.status == "needs_confirmation":
+            log.decision = "awaiting_confirmation"
+            return engine.compose(log.action, "needs_confirmation", decision.preview, "", params)
+        if decision.status == "needs_approval":
+            log.decision = "pending_approval"
+            needs_approval = True
+            return engine.compose(log.action, "needs_approval", decision.preview, decision.reason, params)
+        log.decision = decision.status  # denied | failed
+        blocked(log.action, decision.reason)
+        return engine.compose(log.action, decision.status, None, decision.reason, params)
 
     # ---- 1. pending confirmation from the previous turn ----
     pending = (db.query(ActionLog).filter_by(conversation_id=conv.id, decision="awaiting_confirmation")
                .order_by(ActionLog.id.desc()).first())
-    reply = None
+    plan = None
     if pending and (CONFIRM_RE.match(text) or REJECT_RE.match(text)):
-        params = json.loads(pending.params)
         if REJECT_RE.match(text):
             pending.decision, pending.reason = "declined_by_customer", "Customer declined"
             reply = "Okay, I haven't made any changes. Anything else I can help with?"
             response.update(intent="decline_action", confidence=1.0)
         else:
-            # re-validate: the order may have changed since the confirmation was requested
-            decision = policy.validate(db, business, session, pending.action, params, bool(injections))
-            if decision.status == "needs_confirmation":
-                result = _execute(db, session, pending.action, params, decision.order)
-                pending.decision, pending.result = "executed", to_json(result)
-                reply = engine.compose(None, pending.action, "executed", result, "")
-                conv.resolved_by_ai = True
-            else:
-                pending.decision, pending.reason = "denied", decision.reason
-                reply = engine.compose(None, pending.action, "denied", None, decision.reason)
-                conv.failed_attempts += 1
+            # re-validate: things may have changed since the confirmation was requested
+            decision = policy.validate(db, business, session, pending.action, json.loads(pending.params),
+                                       bool(injections), conv.id)
+            reply = settle(pending, decision, confirmed=True)
             response.update(intent="confirm_action", confidence=1.0)
         action_info = {"name": pending.action, "decision": pending.decision, "reason": pending.reason}
-        last_action = pending.action
-        plan = None
     else:
         if pending:  # customer moved on without confirming
             pending.decision, pending.reason = "expired", "Customer did not confirm"
 
-        # ---- 2. ask the model for a plan ----
+        # ---- 2. ask the model for a plan; read-only lookups feed back into it ----
         history = [{"sender": m.sender, "content": m.content} for m in conv.messages if m.id != customer_msg.id]
-        allowed = [a.strip() for a in business.allowed_actions.split(",")]
-        plan = engine.plan(text, history, business.name, describe_tools(allowed))
+        ctx = _context(db, business, conv)
+        steps, reply = [], None
+        for _ in range(MAX_AGENT_STEPS + 1):
+            plan = engine.plan(text, history, ctx, steps)
+            reply = plan.reply or reply
+            if not plan.action or plan.wants_human:
+                break
+            if any(s["action"] == plan.action and s["params"] == plan.params for s in steps) \
+                    or len(steps) >= MAX_AGENT_STEPS:
+                break  # the model is repeating itself; answer with what we have
+
+            # ---- 3. policy check on the requested action ----
+            decision = policy.validate(db, business, session, plan.action, plan.params, bool(injections), conv.id)
+            log = ActionLog(conversation_id=conv.id, action=str(plan.action)[:48], params=to_json(plan.params),
+                            decision="")
+            db.add(log)
+            reply = settle(log, decision, confirmed=False)
+            action_info = {"name": log.action, "decision": log.decision, "reason": log.reason}
+            if decision.status != "allowed" or log.decision != "executed":
+                break
+            result = json.loads(log.result)
+            steps.append({"action": plan.action, "params": plan.params, "summary": result["summary"],
+                          "result": result["data"]})
+
+        conv.state = json.dumps(ctx.state)
         response.update(intent=plan.intent, confidence=plan.confidence, engine=plan.engine)
         customer_msg.intent, customer_msg.confidence = plan.intent, plan.confidence
         if plan.category != "general" or conv.category == "general":
@@ -135,40 +208,7 @@ def handle_message(db: Session, business: Business, session: CustomerSession, te
             conv.failed_attempts += 1
         if plan.resolved:
             conv.status = "resolved"
-        reply = plan.reply
-
-        # ---- 3. policy check on any requested action ----
-        if plan.action and not plan.wants_human:
-            last_action = plan.action
-            decision = policy.validate(db, business, session, plan.action, plan.params, bool(injections))
-            log = ActionLog(conversation_id=conv.id, action=plan.action, params=json.dumps(plan.params),
-                            decision="", reason=decision.reason)
-            db.add(log)
-            order_view = None
-            if decision.order is not None:
-                o = decision.order
-                order_view = {"order_ref": o.order_ref, "item": o.item, "amount": o.amount, "status": o.status}
-
-            if decision.status == "allowed":
-                result = _execute(db, session, plan.action, plan.params, decision.order)
-                log.decision, log.result = "executed", to_json(result)
-                reply = engine.compose(plan, plan.action, "executed", result, "")
-            elif decision.status == "needs_confirmation":
-                log.decision = "awaiting_confirmation"
-                reply = engine.compose(plan, plan.action, "needs_confirmation", order_view, "")
-            elif decision.status == "needs_approval":
-                log.decision = "pending_approval"
-                needs_approval = True
-                reply = engine.compose(plan, plan.action, "needs_approval", order_view, decision.reason)
-            else:
-                log.decision = "denied"
-                conv.failed_attempts += 1
-                reply = engine.compose(plan, plan.action, "denied", None, decision.reason)
-                if injections:
-                    db.add(SecurityEvent(conversation_id=conv.id, event_type="action_blocked",
-                                         detail=json.dumps({"action": plan.action, "reason": decision.reason})))
-            action_info = {"name": plan.action, "decision": log.decision, "reason": decision.reason}
-        elif plan.confidence < 0.55 and not plan.not_resolved:
+        if not action_info and plan.confidence < LOW_CONFIDENCE_THRESHOLD and not plan.not_resolved:
             conv.failed_attempts += 1
 
     response["action"] = action_info
@@ -188,7 +228,7 @@ def handle_message(db: Session, business: Business, session: CustomerSession, te
         conv.status = "handed_off"
         conv.resolved_by_ai = False
         h = Handoff(conversation_id=conv.id, reasons=",".join(decision.reasons),
-                    summary=_summary(conv, decision.reasons, last_action), priority=decision.priority)
+                    summary=_summary(db, conv, decision.reasons), priority=decision.priority)
         db.add(h)
         db.flush()
         if not needs_approval:

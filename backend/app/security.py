@@ -37,6 +37,14 @@ def verify_password(password: str, stored: str) -> bool:
 
 
 # ---------- Business API key (tenant authentication) ----------
+def new_api_key() -> str:
+    return "sk_live_" + secrets.token_urlsafe(32)
+
+
+def new_webhook_secret() -> str:
+    return "whsec_" + secrets.token_urlsafe(32)
+
+
 def require_business(x_api_key: str = Header(default=""), db: Session = Depends(get_db)) -> Business:
     business = db.query(Business).filter_by(api_key_hash=sha256(x_api_key)).first() if x_api_key else None
     if not business:
@@ -53,11 +61,12 @@ def issue_session(db: Session, business_id: int, customer_id: int) -> str:
     return token
 
 
-def require_session(authorization: str = Header(default=""), business: Business = Depends(require_business),
-                    db: Session = Depends(get_db)) -> CustomerSession:
+def require_session(authorization: str = Header(default=""), db: Session = Depends(get_db)) -> CustomerSession:
+    """The session token alone identifies the business and the customer, so it is the only
+    credential a browser or mobile app ever holds. The secret API key stays on the business's server."""
     token = authorization.removeprefix("Bearer ").strip()
     sess = db.query(CustomerSession).filter_by(token_hash=sha256(token)).first() if token else None
-    if not sess or sess.revoked or sess.expires_at < now() or sess.business_id != business.id:
+    if not sess or sess.revoked or sess.expires_at < now():
         raise HTTPException(status_code=401, detail="Session invalid or expired")
     return sess
 
@@ -111,6 +120,6 @@ def detect_injection(text: str) -> list[str]:
 
 def sanitize_output(text: str) -> str:
     """Strip anything resembling secrets or other customers' emails from AI output."""
-    text = re.sub(r"sk_[A-Za-z0-9_]{8,}", "[redacted]", text)
+    text = re.sub(r"(sk|whsec)_[A-Za-z0-9_\-]{8,}", "[redacted]", text)
     text = re.sub(r"AIza[0-9A-Za-z_\-]{20,}", "[redacted]", text)
     return text
