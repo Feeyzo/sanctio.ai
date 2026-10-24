@@ -112,3 +112,35 @@ def test_dm05_reset_needs_the_token(swiftship):
     assert swiftship.post("/demo/reset", headers={"X-Demo-Token": "guess"}).status_code == 403
     assert swiftship.post("/demo/reset", headers={"X-Demo-Token": "reset-me"}).status_code == 200
     assert demo.store.shipments["SHP-1002"]["status"] == "pending_pickup"
+
+
+def test_dm_reset_button_restores_the_demo(client, swiftship, admin, monkeypatch):
+    """Free hosting has no shell, so the demo account resets itself from the dashboard."""
+    from scripts import seed_demo
+    for key, value in {"DEMO_API_KEY": SETTINGS.api_key, "DEMO_WEBHOOK_SECRET": SETTINGS.webhook_secret,
+                       "DEMO_BUSINESS_URL": SETTINGS.business_url, "DEMO_ADMIN_PASSWORD": SETTINGS.admin_password,
+                       "DEMO_RESET_TOKEN": "reset-me", "DEMO_CUSTOMER_PHONES": "C-1001=+2348030000001"}.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(seed_demo, "RESET_TRANSPORT", forward(swiftship))
+
+    # some demo activity: a cancelled shipment and a conversation
+    swiftship.post("/login", content="customer_id=C-1001", headers={"Content-Type": "application/x-www-form-urlencoded"})
+    token = re.search(r'sessionToken: "([^"]+)"', swiftship.get("/account").text).group(1)
+    chat = {"Authorization": f"Bearer {token}"}
+    r = client.post("/api/v1/chat", json={"message": "Please cancel SHP-1002"}, headers=chat).json()
+    client.post("/api/v1/chat", json={"message": "yes", "conversation_id": r["conversation_id"]}, headers=chat)
+    assert demo.store.shipments["SHP-1002"]["status"] == "cancelled"
+
+    login = client.post("/api/auth/login", json={"email": "demo@swiftship.test", "password": SETTINGS.admin_password})
+    demo_admin = {"Authorization": f"Bearer {login.json()['token']}"}
+    assert client.get("/api/admin/business", headers=demo_admin).json()["is_demo"] is True
+    r = client.post("/api/admin/demo/reset", headers=demo_admin)
+    assert r.status_code == 200 and r.json() == {"ok": True, "shipments": "done"}
+    assert demo.store.shipments["SHP-1002"]["status"] == "pending_pickup"
+    with SessionLocal() as db:
+        assert db.query(Conversation).count() == 0
+    assert client.get("/api/admin/business", headers=demo_admin).status_code == 200  # still signed in
+
+    # any other business cannot use it
+    assert client.get("/api/admin/business", headers=admin).json()["is_demo"] is False
+    assert client.post("/api/admin/demo/reset", headers=admin).status_code == 403

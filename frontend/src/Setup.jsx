@@ -23,6 +23,7 @@ export default function Setup({ auth, newApiKey }) {
   const [error, setError] = useState('')
   const [llmTest, setLlmTest] = useState(null)
   const [testing, setTesting] = useState(false)
+  const [resetState, setResetState] = useState('')  // '' | 'confirm' | 'working' | message
   useEffect(() => { api('/api/admin/business', { headers: auth }).then(setB).catch((e) => setError(e.message)) }, [auth])
   if (!b) return <p className="muted">{error || 'Loading…'}</p>
 
@@ -40,6 +41,14 @@ export default function Setup({ auth, newApiKey }) {
     try { setLlmTest(await api('/api/admin/llm/test', { method: 'POST', headers: auth })) }
     catch (err) { setLlmTest({ ok: false, error: err.message }) }
     finally { setTesting(false) }
+  }
+  const resetDemo = async () => {
+    setResetState('working')
+    try {
+      const d = await api('/api/admin/demo/reset', { method: 'POST', headers: auth })
+      setResetState(d.shipments === 'done' ? 'Demo reset: conversations cleared and shipments restored.'
+        : `Conversations cleared. Shipments: ${d.shipments}`)
+    } catch (err) { setResetState(`Reset failed: ${err.message}`) }
   }
   const rotate = async () => {
     try {
@@ -73,6 +82,24 @@ export default function Setup({ auth, newApiKey }) {
         <p className="muted small">Sanctio signs every action request to your backend with this secret, so you can check
           the request is genuine.</p>
         {showSecret ? <Secret value={b.webhook_secret} /> : <button className="ghost" onClick={() => setShowSecret(true)}>Show secret</button>}
+
+        {b.is_demo && (
+          <>
+            <h3 className="gap">Demo data</h3>
+            <p className="muted small">Clears every conversation, handoff and log, and puts SwiftShip's shipments back
+              to how they started. Use it before each rehearsal and before your presentation.</p>
+            {resetState === 'confirm' ? (
+              <div className="row-head">
+                <button type="button" className="danger" onClick={resetDemo}>Yes, reset the demo</button>
+                <button type="button" className="ghost" onClick={() => setResetState('')}>Cancel</button>
+              </div>
+            ) : (
+              <button type="button" className="ghost" disabled={resetState === 'working'}
+                onClick={() => setResetState('confirm')}>{resetState === 'working' ? 'Resetting…' : 'Reset demo'}</button>
+            )}
+            {resetState && !['confirm', 'working'].includes(resetState) && <p className="small">{resetState}</p>}
+          </>
+        )}
 
         <h3 className="gap">AI model</h3>
         <p>{b.llm_provider === 'gemini' ? 'Google Gemini' : 'Built-in rule-based engine'}</p>

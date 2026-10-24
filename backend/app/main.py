@@ -3,11 +3,13 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -34,7 +36,23 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(engine)
+    _wake_demo_business()
     yield
+
+
+def _wake_demo_business() -> None:
+    """On free hosting both services sleep when idle. When Sanctio wakes up, nudge the demo business
+    awake too, so the first action call during a demo doesn't time out."""
+    url = os.getenv("DEMO_BUSINESS_URL", "").rstrip("/")
+    if not url:
+        return
+
+    def ping():
+        try:
+            httpx.get(f"{url}/health", timeout=90)
+        except httpx.HTTPError as exc:
+            log.info("Demo business at %s did not answer the wake-up call: %s", url, exc)
+    threading.Thread(target=ping, daemon=True).start()
 
 
 app = FastAPI(title="Sanctio — Secure AI Customer Service Agent API", version="2.0.0", lifespan=lifespan,
@@ -216,7 +234,25 @@ def _business_view(b: Business) -> dict:
 
 @app.get("/api/admin/business", tags=["dashboard"])
 def get_business(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
-    return _business_view(db.get(Business, admin.business_id))
+    return {**_business_view(db.get(Business, admin.business_id)), "is_demo": _is_demo_admin(admin)}
+
+
+def _is_demo_admin(admin: AdminUser) -> bool:
+    return admin.email == os.getenv("DEMO_ADMIN_EMAIL", "demo@swiftship.test").strip().lower()
+
+
+@app.post("/api/admin/demo/reset", tags=["dashboard"])
+def reset_demo(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    """Wipe and recreate the SwiftShip demo (conversations, handoffs, logs) and reset its shipments.
+    Only the demo account can do this; it replaces `python -m scripts.seed_demo` where there is no shell."""
+    if not _is_demo_admin(admin):
+        raise HTTPException(403, "Only the demo account can be reset")
+    from scripts import seed_demo  # the seed script lives next to the app; imported here to avoid a cycle
+    settings = seed_demo.Settings.from_env()
+    if settings.missing():
+        raise HTTPException(409, "Demo settings missing on the server: " + ", ".join(settings.missing()))
+    seed_demo.seed(db, settings)
+    return {"ok": True, "shipments": seed_demo.reset_demo_business(settings)}
 
 
 @app.put("/api/admin/business", tags=["dashboard"])

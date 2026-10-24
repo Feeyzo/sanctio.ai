@@ -149,21 +149,26 @@ $env:DEMO_RESET_TOKEN = "local-reset"; $env:DEMO_BUSINESS_URL = "http://localhos
 ```
 Then open http://localhost:8100 as a customer, and http://localhost:5173 signed in as `demo@swiftship.test`.
 
-## Deploy for a live demo (Render)
+## Deploy for a live demo (Render, free)
 `render.yaml` describes everything: the `sanctio` service (Docker: API + website), the `swiftship-demo` service,
-and a PostgreSQL database. Starter plans cost a few dollars a month. Free instances sleep and take about a
-minute to wake, which is not something to risk during a presentation.
+and a PostgreSQL database, all on Render's **free** plans. Things to know about free plans:
+- **Services sleep after 15 minutes without visitors** and take about a minute to wake. Opening SwiftShip also wakes
+  Sanctio, and Sanctio wakes SwiftShip when it starts, so opening one link is enough. Do it ~10 minutes before you present.
+- **The free database expires 30 days after it is created.** Create it within 30 days of your defence, or use a free
+  [Neon](https://neon.tech) database instead: paste its connection string as `DATABASE_URL` on the sanctio service.
+- **There is no Shell tab**, so reset the demo from the dashboard (step 5).
 
-1. Push the repository to GitHub. In Render: **New → Blueprint**, choose the repository.
-2. When asked for values: `DEMO_ADMIN_PASSWORD` (your dashboard password), `GEMINI_API_KEY` (optional), and the
-   WhatsApp values (optional, see below). Leave `DEMO_BUSINESS_URL` and `SANCTIO_URL` blank for now.
+1. Push the repository to GitHub. In Render: **New → Blueprint**, choose the repository and the `main` branch.
+2. When asked for values: `DEMO_ADMIN_PASSWORD` (your dashboard password), `GEMINI_API_KEY` (from
+   https://aistudio.google.com/apikey), and the WhatsApp values (optional, see below). Leave `DEMO_BUSINESS_URL` and
+   `SANCTIO_URL` blank for now.
 3. After the first deploy, copy the two public URLs. Set `DEMO_BUSINESS_URL` on **sanctio** to the swiftship-demo URL,
    and `SANCTIO_URL` on **swiftship-demo** to the sanctio URL. Both redeploy. On start, Sanctio seeds the demo
    business if it doesn't exist yet.
 4. Open the SwiftShip URL, sign in as a customer and chat. Sign in to the Sanctio URL as `demo@swiftship.test`
-   to see the dashboard.
-5. **Reset before each rehearsal and before the defense:** in the sanctio service's **Shell** tab, run
-   `python -m scripts.seed_demo`.
+   to see the dashboard, and press **Setup → AI model → Test Gemini**.
+5. **Reset before each rehearsal and before the defence:** sign in as `demo@swiftship.test` and press
+   **Setup → Demo data → Reset demo**. It clears conversations, handoffs and logs, and restores the shipments.
 
 **WhatsApp on the hosted demo:** use a permanent access token (Meta Business Settings → System users → generate
 a token with `whatsapp_business_messaging`). The temporary API Setup token expires after 24 hours. Set the

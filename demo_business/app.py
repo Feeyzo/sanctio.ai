@@ -189,8 +189,28 @@ def page(body: str, nav: str = "", scripts: str = "") -> HTMLResponse:
     return HTMLResponse(PAGE.format(body=body, nav=nav, scripts=scripts))
 
 
+_last_wake = 0.0
+
+
+def wake_sanctio() -> None:
+    """Free hosting puts idle services to sleep. Opening SwiftShip starts waking Sanctio in the
+    background, so it is ready by the time the customer has signed in."""
+    global _last_wake
+    if sanctio_transport is not None or time.time() - _last_wake < 60:
+        return
+    _last_wake = time.time()
+
+    def ping():
+        try:
+            httpx.get(f"{SANCTIO_URL}/api/health", timeout=90)
+        except httpx.HTTPError:
+            pass
+    threading.Thread(target=ping, daemon=True).start()
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
+    wake_sanctio()
     if signed_in(request):
         return RedirectResponse("/account", status_code=303)
     cards = "".join(
@@ -227,7 +247,8 @@ def open_sanctio_session(customer_id: str) -> str:
     body = {"customer_id": customer_id, "customer_name": name, "customer_email": email}
     if PHONES.get(customer_id):
         body["customer_phone"] = PHONES[customer_id]  # numbers this business has verified
-    with httpx.Client(transport=sanctio_transport, timeout=15) as client:
+    # long timeout: on Render's free plan Sanctio may be waking up, which takes about a minute
+    with httpx.Client(transport=sanctio_transport, timeout=90) as client:
         r = client.post(f"{SANCTIO_URL}/api/v1/sessions", json=body, headers={"X-API-Key": API_KEY})
     r.raise_for_status()
     return r.json()["session_token"]

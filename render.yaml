@@ -1,4 +1,6 @@
-# Render Blueprint: Sanctio + the SwiftShip demo business + PostgreSQL.
+# Render Blueprint: Sanctio + the SwiftShip demo business + PostgreSQL, all on Render's free plans.
+# Free web services sleep after 15 minutes without traffic and take about a minute to wake; the free
+# database is deleted 30 days after it is created. See "Deploy for a live demo" in README.md.
 # Render dashboard -> New -> Blueprint -> pick this repository. Values marked `sync: false`
 # are asked for when the Blueprint is created; see "Deploy for a live demo" in README.md.
 envVarGroups:
@@ -13,7 +15,7 @@ envVarGroups:
 
 databases:
   - name: sanctio-db
-    plan: basic-256mb                  # paid; the free plan's database is deleted after 30 days
+    plan: free                         # deleted 30 days after creation; or use a free Neon database (README)
     databaseName: sanctio
     user: sanctio
 
@@ -21,7 +23,7 @@ services:
   - type: web
     name: sanctio
     runtime: docker
-    plan: starter                      # free instances sleep and take ~1 minute to wake up
+    plan: free                         # sleeps after 15 idle minutes; wakes in about a minute
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
     envVars:
@@ -58,7 +60,7 @@ services:
   - type: web
     name: swiftship-demo
     runtime: python
-    plan: starter
+    plan: free
     rootDir: demo_business
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips="*"

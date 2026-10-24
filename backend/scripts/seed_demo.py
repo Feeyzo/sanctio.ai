@@ -145,11 +145,15 @@ def seed(db, s: Settings) -> Business:
     return business
 
 
+RESET_TRANSPORT: httpx.BaseTransport | None = None  # tests route the reset call to an in-process demo app
+
+
 def reset_demo_business(s: Settings, transport: httpx.BaseTransport | None = None) -> str:
     if not s.reset_token:
         return "skipped (DEMO_RESET_TOKEN not set)"
     try:
-        with httpx.Client(transport=transport, timeout=15) as client:
+        # long timeout: on Render's free plan the demo business may be waking up (about a minute)
+        with httpx.Client(transport=transport or RESET_TRANSPORT, timeout=90) as client:
             r = client.post(f"{s.business_url}/demo/reset", headers={"X-Demo-Token": s.reset_token})
         return "done" if r.status_code == 200 else f"failed ({r.status_code})"
     except httpx.HTTPError as exc:
