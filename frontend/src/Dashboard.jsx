@@ -72,16 +72,35 @@ function Overview({ auth, setTab }) {
   )
 }
 
+const CHANNELS = { web: 'Web', whatsapp: 'WhatsApp' }
+
+function ChannelBadge({ channel }) {
+  return <span className={`pill channel ${channel}`}>{CHANNELS[channel] || channel}</span>
+}
+
+function ChannelFilter({ value, onChange }) {
+  return (
+    <div className="filters">
+      {['', 'web', 'whatsapp'].map((c) => (
+        <button key={c} className={value === c ? 'active' : 'ghost'} onClick={() => onChange(c)}>{c ? CHANNELS[c] : 'all channels'}</button>
+      ))}
+    </div>
+  )
+}
+
 function Handoffs({ auth, open }) {
   const [rows, setRows] = useState([])
-  const load = useCallback(() => api('/api/admin/handoffs', { headers: auth }).then(setRows), [auth])
+  const [channel, setChannel] = useState('')
+  const load = useCallback(() => api(`/api/admin/handoffs${channel ? `?channel=${channel}` : ''}`, { headers: auth }).then(setRows), [auth, channel])
   useEffect(() => { load() }, [load])
   const claim = async (id) => { await api(`/api/admin/handoffs/${id}/claim`, { method: 'POST', headers: auth }); load() }
-  if (!rows.length) return <div className="card empty">No handoffs yet. Conversations that need a person will appear here.</div>
-  return rows.map((h) => (
+  const filter = <ChannelFilter value={channel} onChange={setChannel} />
+  if (!rows.length) return <>{filter}<div className="card empty">No handoffs yet. Conversations that need a person will appear here.</div></>
+  return <>{filter}{rows.map((h) => (
     <div key={h.id} className={`card handoff ${h.priority}`}>
       <div className="row-head">
         <strong>#{h.id} · {h.customer}</strong>
+        <ChannelBadge channel={h.channel} />
         <span className={`pill ${h.priority === 'high' ? 'bad' : 'warn'}`}>{h.priority}</span>
         <span className="pill">{h.status}{h.assigned_to ? ` · ${h.assigned_to}` : ''}</span>
         <span className="muted small">{fmtDate(h.created_at)}</span>
@@ -93,7 +112,7 @@ function Handoffs({ auth, open }) {
         <button className="ghost" onClick={() => open(h.conversation_id)}>Open conversation</button>
       </div>
     </div>
-  ))
+  ))}</>
 }
 
 function Approvals({ auth }) {
@@ -125,22 +144,30 @@ function Approvals({ auth }) {
 function ConversationDetail({ auth, id, back }) {
   const [c, setC] = useState(null)
   const [reply, setReply] = useState('')
+  const [error, setError] = useState('')
   const load = useCallback(() => api(`/api/admin/conversations/${id}`, { headers: auth }).then(setC), [auth, id])
   useEffect(() => { load() }, [load])
   if (!c) return <p className="muted">Loading…</p>
   const send = async (e) => {
     e.preventDefault()
     if (!reply.trim()) return
-    await api(`/api/admin/conversations/${id}/reply`, { method: 'POST', headers: auth, body: { message: reply } })
-    setReply(''); load()
+    setError('')
+    try {
+      await api(`/api/admin/conversations/${id}/reply`, { method: 'POST', headers: auth, body: { message: reply } })
+      setReply('')
+    } catch (err) { setError(err.message) }
+    load()
   }
   const resolve = async () => { await api(`/api/admin/conversations/${id}/resolve`, { method: 'POST', headers: auth }); load() }
   return (
     <div className="grid-detail">
       <div className="card">
         <button className="ghost" onClick={back}>← Back</button>
-        <h3>Conversation #{c.id} · {c.customer} <span className="muted small">{c.customer_email}</span></h3>
-        <p><span className="pill">{pretty(c.status)}</span> <span className="pill">{pretty(c.category)}</span></p>
+        <h3>Conversation #{c.id} · {c.customer} <span className="muted small">{c.customer_email || (c.channel === 'whatsapp' ? c.contact : '')}</span></h3>
+        <p><ChannelBadge channel={c.channel} /> <span className="pill">{pretty(c.status)}</span> <span className="pill">{pretty(c.category)}</span></p>
+        {c.whatsapp_window_open === false && (
+          <p className="notice-text small">The customer last wrote more than 24 hours ago. WhatsApp only allows a template message until they write again.</p>
+        )}
         <div className="messages admin">
           {c.messages.map((m) => (
             <div key={m.id} className={`bubble ${m.sender}`}>
@@ -157,6 +184,7 @@ function ConversationDetail({ auth, id, back }) {
           <button>Send</button>
           {c.status !== 'resolved' && <button type="button" className="ghost" onClick={resolve}>Mark resolved</button>}
         </form>
+        {error && <p className="error">{error}</p>}
       </div>
       <div className="card">
         <h3>Action audit log</h3>
@@ -176,7 +204,11 @@ function ConversationDetail({ auth, id, back }) {
 function Conversations({ auth, open }) {
   const [rows, setRows] = useState([])
   const [status, setStatus] = useState('')
-  useEffect(() => { api(`/api/admin/conversations${status ? `?status=${status}` : ''}`, { headers: auth }).then(setRows) }, [auth, status])
+  const [channel, setChannel] = useState('')
+  useEffect(() => {
+    const q = new URLSearchParams(Object.entries({ status, channel }).filter(([, v]) => v)).toString()
+    api(`/api/admin/conversations${q ? `?${q}` : ''}`, { headers: auth }).then(setRows)
+  }, [auth, status, channel])
   return (
     <div className="card">
       <div className="filters">
@@ -184,13 +216,14 @@ function Conversations({ auth, open }) {
           <button key={s} className={status === s ? 'active' : 'ghost'} onClick={() => setStatus(s)}>{s ? pretty(s) : 'all'}</button>
         ))}
       </div>
+      <ChannelFilter value={channel} onChange={setChannel} />
       <div className="table-wrap">
         <table>
-          <thead><tr><th>#</th><th>Customer</th><th>Category</th><th>Status</th><th>Sentiment</th><th>Last message</th><th>Updated</th></tr></thead>
+          <thead><tr><th>#</th><th>Customer</th><th>Channel</th><th>Category</th><th>Status</th><th>Sentiment</th><th>Last message</th><th>Updated</th></tr></thead>
           <tbody>
             {rows.map((c) => (
               <tr key={c.id} onClick={() => open(c.id)}>
-                <td>{c.id}</td><td>{c.customer}</td><td>{pretty(c.category)}</td><td>{pretty(c.status)}</td>
+                <td>{c.id}</td><td>{c.customer}</td><td><ChannelBadge channel={c.channel} /></td><td>{pretty(c.category)}</td><td>{pretty(c.status)}</td>
                 <td>{c.sentiment}</td><td className="ellipsis">{c.last_message}</td><td className="small">{fmtDate(c.updated_at)}</td>
               </tr>
             ))}

@@ -78,6 +78,7 @@ export default function Docs({ go }) {
           ['customer_id', 'Required. Your ID for this customer, up to 64 characters.'],
           ['customer_name', 'Optional. Shown to your support team.'],
           ['customer_email', 'Optional. Shown to your support team.'],
+          ['customer_phone', 'Optional. A mobile number you have verified, in international format (+2348030000001). Links the customer\'s WhatsApp messages to this account; only send it once you have confirmed the customer owns the number.'],
         ]} />
         <p>To end a session early (for example on logout): <code>DELETE /api/v1/sessions</code> with the session token.</p>
 

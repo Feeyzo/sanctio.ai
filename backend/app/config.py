@@ -29,3 +29,10 @@ ALLOW_PRIVATE_WEBHOOK_URLS = os.getenv("ALLOW_PRIVATE_WEBHOOK_URLS", "1") == "1"
 NEGATIVE_SENTIMENT_THRESHOLD = float(os.getenv("NEGATIVE_SENTIMENT_THRESHOLD", "-0.6"))
 LOW_CONFIDENCE_THRESHOLD = float(os.getenv("LOW_CONFIDENCE_THRESHOLD", "0.55"))
 MAX_FAILED_ATTEMPTS = int(os.getenv("MAX_FAILED_ATTEMPTS", "2"))
+
+# WhatsApp Cloud API (Meta). Leave empty to disable the channel: webhooks are then rejected.
+WHATSAPP_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "")      # system-user token used to send messages
+WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")  # default sender when none is recorded
+WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "")      # chosen by you, entered in the Meta app
+WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET", "")          # Meta app secret, signs incoming webhooks
+WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v23.0")

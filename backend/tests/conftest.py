@@ -5,6 +5,11 @@ _tmp = tempfile.mkdtemp()
 os.environ["DATABASE_URL"] = f"sqlite:///{_tmp}/test.db"
 os.environ["LLM_PROVIDER"] = "mock"
 os.environ["GEMINI_API_KEY"] = ""
+os.environ["WHATSAPP_ACCESS_TOKEN"] = "test-access-token"
+os.environ["WHATSAPP_PHONE_NUMBER_ID"] = "100000000000001"
+os.environ["WHATSAPP_VERIFY_TOKEN"] = "test-verify-token"
+os.environ["WHATSAPP_APP_SECRET"] = "test-app-secret"
+os.environ["WHATSAPP_API_VERSION"] = "v23.0"
 
 import httpx  # noqa: E402
 import pytest  # noqa: E402

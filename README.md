@@ -39,6 +39,11 @@ http://localhost:8000/api/docs.
 | `ALLOW_PRIVATE_WEBHOOK_URLS` | `1` | Allows `http://localhost` action URLs for development. **Set to `0` in production.** |
 | `DATABASE_URL` | SQLite file | Any SQLAlchemy URL. |
 | `CORS_ORIGINS` | `*` | Comma-separated origins allowed to call the API from a browser. |
+| `WHATSAPP_ACCESS_TOKEN` | empty | Meta access token used to send WhatsApp messages (a system-user token in production). |
+| `WHATSAPP_PHONE_NUMBER_ID` | empty | Default sending number (Meta's *Phone number ID*, not the phone number itself). |
+| `WHATSAPP_VERIFY_TOKEN` | empty | Any random string; enter the same value in the Meta app's webhook settings. |
+| `WHATSAPP_APP_SECRET` | empty | Meta app secret. Verifies `X-Hub-Signature-256` on every webhook. Empty = all webhooks rejected. |
+| `WHATSAPP_API_VERSION` | `v23.0` | Graph API version. |
 
 The app reads real environment variables; it does not load a `.env` file by itself.
 
@@ -49,3 +54,72 @@ cd backend
 ```
 The tests run the whole flow against an in-process fake logistics backend (`backend/tests/fake_business.py`), which
 is also a compact reference for how a business's action endpoint should behave.
+
+## WhatsApp channel
+Customers can also chat with the agent on WhatsApp, through Meta's official **WhatsApp Cloud API**
+(`backend/app/channels/`). WhatsApp is only another entry point: every message runs through the same
+`agent.handle_message` pipeline, policy engine and handoff engine as the web chat.
+
+- **Webhook:** `GET /webhooks/whatsapp` answers Meta's verification handshake. `POST /webhooks/whatsapp` checks the
+  `X-Hub-Signature-256` HMAC over the raw body (401 if it is wrong), answers 200 at once and processes the
+  messages in the background. Each WhatsApp message id is handled once, even when Meta retries.
+- **Which business:** each business connects its number (Meta's *phone number ID*):
+  `POST /api/admin/whatsapp/numbers {"phone_number_id": "...", "display_phone": "+1 555 ..."}`.
+- **Which customer:** the business links a number to a customer by passing `customer_phone` (E.164, for example
+  `+2348030000001`) to `POST /api/v1/sessions`. Only do this once you have verified the customer owns the number.
+  Messages from a linked number get an internal session for that customer. An unlinked number gets no
+  session, so it can ask general questions but the policy engine refuses every order or account action, and the
+  reply explains how to link the number.
+- **Confirmations:** actions that need confirmation are sent with **Confirm** / **Cancel** buttons. A tap counts
+  only for that customer's latest pending action. Old, forged or other customers' buttons change nothing and
+  are logged as security events.
+- **Human replies:** a team member's reply to a WhatsApp conversation is sent on WhatsApp. More than 24 hours after
+  the customer's last message, WhatsApp only allows template messages, so the dashboard shows
+  "24-hour window closed — a template message is required" and nothing is sent.
+- Voice notes, images and stickers get a polite request to type the question instead.
+
+**Upgrading an existing database:** this adds a table and columns, and makes `conversations.customer_id` nullable.
+`create_all` does not change existing tables. In development, delete `backend/agent.db` and it is recreated on
+start. For PostgreSQL:
+```sql
+ALTER TABLE customers ADD COLUMN phone VARCHAR(20) NOT NULL DEFAULT '';
+CREATE INDEX ix_customers_phone ON customers (phone);
+ALTER TABLE sessions ADD COLUMN channel VARCHAR(16) NOT NULL DEFAULT 'web';
+ALTER TABLE conversations ALTER COLUMN customer_id DROP NOT NULL;
+ALTER TABLE conversations ADD COLUMN channel VARCHAR(16) NOT NULL DEFAULT 'web';
+ALTER TABLE conversations ADD COLUMN contact VARCHAR(20) NOT NULL DEFAULT '';
+ALTER TABLE conversations ADD COLUMN wa_phone_number_id VARCHAR(32) NOT NULL DEFAULT '';
+-- whatsapp_numbers and whatsapp_inbound are new tables: create_all creates them on start
+```
+
+### Try it locally with Meta's test number and ngrok
+1. In [Meta for Developers](https://developers.facebook.com/apps), create an app of type **Business** and add the
+   **WhatsApp** product. Under *WhatsApp → API Setup* you get a test number, its **Phone number ID**, and a
+   temporary access token (valid for 24 hours). Add your own phone as an allowed recipient and verify it.
+   The app secret is under *App settings → Basic*.
+2. Start the API with the WhatsApp settings:
+   ```powershell
+   cd backend
+   $env:WHATSAPP_ACCESS_TOKEN = "EAAG..."          # temporary token from API Setup
+   $env:WHATSAPP_PHONE_NUMBER_ID = "1234567890"    # Phone number ID from API Setup
+   $env:WHATSAPP_VERIFY_TOKEN = "any-long-random-string"
+   $env:WHATSAPP_APP_SECRET = "app-secret-from-basic-settings"
+   .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000
+   ```
+3. Expose it: `ngrok http 8000`, and copy the `https://....ngrok-free.app` URL.
+4. In *WhatsApp → Configuration → Webhook*, set the callback URL to `https://<ngrok-host>/webhooks/whatsapp`
+   and the verify token to the same value as `WHATSAPP_VERIFY_TOKEN`, then click **Verify and save**. Subscribe to
+   the **messages** field.
+5. Connect the number to your business and link yourself as a customer (use your dashboard sign-in token and API key):
+   ```powershell
+   $admin = @{ Authorization = "Bearer <token from /api/auth/login>" }
+   Invoke-RestMethod -Method Post http://localhost:8000/api/admin/whatsapp/numbers -Headers $admin `
+     -ContentType application/json -Body '{"phone_number_id": "1234567890", "display_phone": "test number"}'
+   Invoke-RestMethod -Method Post http://localhost:8000/api/v1/sessions -Headers @{ "X-API-Key" = "sk_live_..." } `
+     -ContentType application/json -Body '{"customer_id": "C-1001", "customer_name": "Me", "customer_phone": "+234..."}'
+   ```
+6. Send a WhatsApp message to the test number from your phone. Try a question, an order lookup, a cancellation
+   (you get Confirm/Cancel buttons), "I want to speak to a human" (then reply from the dashboard), and a voice note.
+   Message it from a phone number you have not linked to see what an unlinked number can do.
+
+The WhatsApp tests (`backend/tests/test_whatsapp.py`) replace the Graph API with an in-process fake, so no network is needed.

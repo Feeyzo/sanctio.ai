@@ -74,6 +74,7 @@ label.check input { width: auto; margin: 0; accent-color: var(--ink); }
 /* ---- status ---- */
 .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 9px; border-radius: 99px; background: #fff; border: 1px solid var(--line-strong); text-transform: capitalize; white-space: nowrap; }
 .pill.good::before, .pill.warn::before, .pill.bad::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.pill.channel { text-transform: none; } .pill.channel.whatsapp { border-color: #25d366; color: #128c4b; }
 .pill.good::before { color: var(--good); } .pill.warn::before { color: var(--warn); } .pill.bad::before { color: var(--bad); }
 .chip { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 6px; background: var(--soft); margin: 0 6px 6px 0; text-transform: capitalize; }
 

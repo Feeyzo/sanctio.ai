@@ -60,6 +60,8 @@ class Customer(Base):
     external_id: Mapped[str] = mapped_column(String(64))  # customer id in the business's own system
     name: Mapped[str] = mapped_column(String(120), default="")
     email: Mapped[str] = mapped_column(String(160), default="")
+    # E.164 (e.g. +2348030000001), set by the business when it opens a session; links WhatsApp messages
+    phone: Mapped[str] = mapped_column(String(20), default="", index=True)
 
 
 class CustomerSession(Base):
@@ -72,6 +74,7 @@ class CustomerSession(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
     action_count: Mapped[int] = mapped_column(Integer, default=0)
+    channel: Mapped[str] = mapped_column(String(16), default="web")  # web|whatsapp (whatsapp: issued internally)
     customer: Mapped[Customer] = relationship()
 
 
@@ -79,7 +82,11 @@ class Conversation(Base):
     __tablename__ = "conversations"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"))
-    customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"))
+    # empty for a WhatsApp number not linked to any customer: no session, so no actions
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"), nullable=True)
+    channel: Mapped[str] = mapped_column(String(16), default="web")  # web|whatsapp
+    contact: Mapped[str] = mapped_column(String(20), default="")  # WhatsApp: the customer's number (E.164)
+    wa_phone_number_id: Mapped[str] = mapped_column(String(32), default="")  # WhatsApp: the business number used
     status: Mapped[str] = mapped_column(String(24), default="active")  # active|handed_off|resolved
     category: Mapped[str] = mapped_column(String(48), default="general")
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
@@ -88,7 +95,7 @@ class Conversation(Base):
     state: Mapped[str] = mapped_column(Text, default="{}")  # JSON scratch space for the rule-based engine
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
-    customer: Mapped[Customer] = relationship()
+    customer: Mapped[Customer | None] = relationship()
     messages: Mapped[list["Message"]] = relationship(back_populates="conversation", order_by="Message.id")
 
 
@@ -149,3 +156,25 @@ class AdminUser(Base):
     email: Mapped[str] = mapped_column(String(160), unique=True)
     password_hash: Mapped[str] = mapped_column(String(256))
     name: Mapped[str] = mapped_column(String(120))
+
+
+class WhatsAppNumber(Base):
+    """A WhatsApp Business phone number connected by a business (Meta's phone_number_id routes webhooks)."""
+    __tablename__ = "whatsapp_numbers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"))
+    phone_number_id: Mapped[str] = mapped_column(String(32), unique=True)
+    display_phone: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class WhatsAppInbound(Base):
+    """Every inbound WhatsApp message id seen. The unique id makes Meta's webhook retries idempotent,
+    and sent_at tells whether the 24-hour customer-service window is open."""
+    __tablename__ = "whatsapp_inbound"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    wa_message_id: Mapped[str] = mapped_column(String(128), unique=True)
+    phone_number_id: Mapped[str] = mapped_column(String(32), index=True)
+    sender: Mapped[str] = mapped_column(String(20), index=True)  # E.164
+    msg_type: Mapped[str] = mapped_column(String(24))
+    sent_at: Mapped[datetime] = mapped_column(DateTime, default=now)

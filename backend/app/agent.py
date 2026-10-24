@@ -30,15 +30,19 @@ def to_json(data) -> str:
     return json.dumps(data, default=str)
 
 
-def _get_conversation(db: Session, session: CustomerSession, conversation_id: int | None) -> Conversation:
+def _get_conversation(db: Session, business: Business, session: CustomerSession | None,
+                      conversation_id: int | None) -> Conversation:
     if conversation_id:
         conv = db.get(Conversation, conversation_id)
-        # a customer may only continue their own conversation
-        if not conv or conv.customer_id != session.customer_id or conv.business_id != session.business_id:
+        # a customer may only continue their own conversation; without a session, only one with no customer
+        owner = session.customer_id if session else None
+        if not conv or conv.customer_id != owner or conv.business_id != business.id                 or (session and session.business_id != business.id):
             raise AgentError(404, "Conversation not found")
         if conv.status == "resolved":
             conv.status = "active"
         return conv
+    if session is None:  # a channel without a session must create the conversation itself
+        raise AgentError(404, "Conversation not found")
     conv = Conversation(business_id=session.business_id, customer_id=session.customer_id)
     db.add(conv)
     db.flush()
@@ -82,21 +86,26 @@ def _summary(db: Session, conv: Conversation, reasons: list[str]) -> str:
     quoted = " | ".join(m.content[:140] for m in msgs)
     logs = db.query(ActionLog).filter_by(conversation_id=conv.id).order_by(ActionLog.id.desc()).limit(4).all()
     actions = "; ".join(f"{a.action} ({a.decision})" for a in reversed(logs)) or "none"
-    who = conv.customer.name or conv.customer.external_id
-    return (f"Customer: {who} ({conv.customer.email or conv.customer.external_id}). Category: {conv.category}. "
+    if conv.customer:
+        who = f"{conv.customer.name or conv.customer.external_id} ({conv.customer.email or conv.customer.external_id})"
+    else:
+        who = f"unverified {conv.channel} contact {conv.contact or 'unknown'}"
+    return (f"Customer: {who}. Channel: {conv.channel}. Category: {conv.category}. "
             f"Triggers: {', '.join(reasons)}. Actions: {actions}. "
             f"Failed attempts: {conv.failed_attempts}. Recent customer messages: {quoted}")
 
 
-def handle_message(db: Session, business: Business, session: CustomerSession, text: str,
+def handle_message(db: Session, business: Business, session: CustomerSession | None, text: str,
                    conversation_id: int | None = None) -> dict:
+    """`session` is None for a contact with no verified identity (an unlinked WhatsApp number): the
+    agent can still answer from the knowledge base, but the policy engine refuses every action."""
     text = (text or "").strip()
     if not text:
         raise AgentError(422, "Message cannot be empty")
     if len(text) > MAX_MESSAGE_LENGTH:
         raise AgentError(422, f"Message longer than {MAX_MESSAGE_LENGTH} characters")
 
-    conv = _get_conversation(db, session, conversation_id)
+    conv = _get_conversation(db, business, session, conversation_id)
     score = sentiment.analyse(text)
     injections = detect_injection(text)
     customer_msg = Message(conversation_id=conv.id, sender="customer", content=text, sentiment=score)

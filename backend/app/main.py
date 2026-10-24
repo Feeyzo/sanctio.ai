@@ -1,5 +1,6 @@
 """FastAPI application: integration API, business dashboard API and the website."""
 import json
+import logging
 import os
 import re
 from contextlib import asynccontextmanager
@@ -15,6 +16,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from . import agent, connectors, policy
+from .channels import whatsapp
+from .channels.whatsapp_api import WhatsAppError, normalise_phone
 from .config import LLM_PROVIDER
 from .db import Base, engine, get_db
 from .models import (Action, ActionLog, AdminUser, Business, Conversation, Customer, CustomerSession, Handoff,
@@ -22,6 +25,7 @@ from .models import (Action, ActionLog, AdminUser, Business, Conversation, Custo
 from .security import (hash_password, issue_session, make_admin_token, new_api_key, new_webhook_secret,
                        require_admin, require_business, require_session, sha256, verify_password)
 
+log = logging.getLogger("agent.main")
 STATIC = Path(__file__).resolve().parent / "static"
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -37,6 +41,7 @@ app = FastAPI(title="Sanctio — Secure AI Customer Service Agent API", version=
               description="Customer-service agent with verified action execution and sentiment-aware human handoff.")
 app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
                    allow_methods=["*"], allow_headers=["*"])
+app.include_router(whatsapp.router)  # before the website's catch-all route
 
 
 @app.exception_handler(agent.AgentError)
@@ -61,6 +66,8 @@ class SessionIn(BaseModel):
     customer_id: str = Field(..., min_length=1, max_length=64)
     customer_name: str = Field("", max_length=120)
     customer_email: str = Field("", max_length=160)
+    # the customer's verified mobile number, international format; links their WhatsApp messages
+    customer_phone: str = Field("", max_length=32)
 
 
 class ChatIn(BaseModel):
@@ -117,12 +124,23 @@ def health():
 def create_session(body: SessionIn, business: Business = Depends(require_business), db: Session = Depends(get_db)):
     """Called by the business's own backend after it has authenticated its customer."""
     external_id = body.customer_id.strip()
+    phone = None
+    if body.customer_phone.strip():
+        phone = normalise_phone(body.customer_phone)
+        if not phone:
+            raise HTTPException(422, "customer_phone must be in international format, e.g. +2348030000001")
     customer = db.query(Customer).filter_by(business_id=business.id, external_id=external_id).first()
     if not customer:
         customer = Customer(business_id=business.id, external_id=external_id)
         db.add(customer)
     customer.name = body.customer_name.strip() or customer.name or ""
     customer.email = body.customer_email.strip() or customer.email or ""
+    if phone and phone != customer.phone:
+        # a number identifies one customer: the business's latest assertion wins
+        for other in db.query(Customer).filter(Customer.business_id == business.id, Customer.phone == phone):
+            log.info("Phone number moved from customer %s to %s", other.external_id, external_id)
+            other.phone = ""
+        customer.phone = phone
     db.flush()
     return {"session_token": issue_session(db, business.id, customer.id), "customer_id": external_id}
 
@@ -382,13 +400,17 @@ def stats(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_d
     }
 
 
-def _customer_label(c: Customer) -> str:
+def _customer_label(conv: Conversation) -> str:
+    c = conv.customer
+    if c is None:
+        return f"Unlinked {conv.contact}" if conv.contact else "Unknown"
     return c.name or c.external_id
 
 
 def _conv_summary(c: Conversation) -> dict:
     last = c.messages[-1].content if c.messages else ""
-    return {"id": c.id, "customer": _customer_label(c.customer), "status": c.status, "category": c.category,
+    return {"id": c.id, "customer": _customer_label(c), "channel": c.channel, "contact": c.contact,
+            "status": c.status, "category": c.category,
             "sentiment": c.last_sentiment, "failed_attempts": c.failed_attempts, "resolved_by_ai": c.resolved_by_ai,
             "messages": len(c.messages), "last_message": last[:120], "updated_at": c.updated_at}
 
@@ -401,17 +423,23 @@ def _own_conversation(db: Session, admin: AdminUser, conv_id: int) -> Conversati
 
 
 @app.get("/api/admin/conversations", tags=["dashboard"])
-def list_conversations(status: str | None = None, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+def list_conversations(status: str | None = None, channel: str | None = None,
+                       admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
     q = db.query(Conversation).filter_by(business_id=admin.business_id)
     if status:
         q = q.filter_by(status=status)
+    if channel:
+        q = q.filter_by(channel=channel)
     return [_conv_summary(c) for c in q.order_by(Conversation.updated_at.desc()).limit(100).all()]
 
 
 @app.get("/api/admin/conversations/{conv_id}", tags=["dashboard"])
 def conversation_detail(conv_id: int, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
     conv = _own_conversation(db, admin, conv_id)
-    return {**_conv_summary(conv), "customer_email": conv.customer.email, "customer_id": conv.customer.external_id,
+    customer = conv.customer
+    return {**_conv_summary(conv), "customer_email": customer.email if customer else "",
+            "customer_id": customer.external_id if customer else "",
+            "whatsapp_window_open": whatsapp.window_open(db, conv) if conv.channel == "whatsapp" else None,
             "messages": [{"id": m.id, "sender": m.sender, "content": m.content, "sentiment": m.sentiment,
                           "intent": m.intent, "confidence": m.confidence, "at": m.created_at} for m in conv.messages],
             "actions": [{"id": a.id, "action": a.action, "params": json.loads(a.params), "decision": a.decision,
@@ -424,7 +452,16 @@ def conversation_detail(conv_id: int, admin: AdminUser = Depends(require_admin),
 @app.post("/api/admin/conversations/{conv_id}/reply", tags=["dashboard"])
 def human_reply(conv_id: int, body: HumanReplyIn, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
     conv = _own_conversation(db, admin, conv_id)
-    db.add(Message(conversation_id=conv.id, sender="human", content=f"{body.message}\n— {admin.name}"))
+    content = f"{body.message}\n— {admin.name}"
+    if conv.channel == "whatsapp":
+        # deliver first: a message the customer never received is not saved as sent
+        try:
+            whatsapp.send_to_conversation(db, conv, content)
+        except WhatsAppError as exc:
+            if str(exc) == whatsapp.WINDOW_CLOSED:
+                raise HTTPException(409, whatsapp.WINDOW_CLOSED)
+            raise HTTPException(502, f"WhatsApp delivery failed: {exc}")
+    db.add(Message(conversation_id=conv.id, sender="human", content=content))
     conv.updated_at = now()
     db.commit()
     return {"ok": True}
@@ -441,10 +478,13 @@ def resolve_conversation(conv_id: int, admin: AdminUser = Depends(require_admin)
 
 
 @app.get("/api/admin/handoffs", tags=["dashboard"])
-def list_handoffs(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
-    rows = (db.query(Handoff).join(Conversation).filter(Conversation.business_id == admin.business_id)
-            .order_by(Handoff.status != "open", Handoff.priority != "high", Handoff.id.desc()).limit(100).all())
-    return [{"id": h.id, "conversation_id": h.conversation_id, "customer": _customer_label(h.conversation.customer),
+def list_handoffs(channel: str | None = None, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    q = db.query(Handoff).join(Conversation).filter(Conversation.business_id == admin.business_id)
+    if channel:
+        q = q.filter(Conversation.channel == channel)
+    rows = (q.order_by(Handoff.status != "open", Handoff.priority != "high", Handoff.id.desc()).limit(100).all())
+    return [{"id": h.id, "conversation_id": h.conversation_id, "customer": _customer_label(h.conversation),
+             "channel": h.conversation.channel,
              "reasons": h.reasons.split(","), "priority": h.priority, "status": h.status,
              "assigned_to": h.assigned_to, "summary": h.summary, "created_at": h.created_at} for h in rows]
 
@@ -499,9 +539,18 @@ def decide_approval(action_id: int, verdict: str, admin: AdminUser = Depends(req
         text = f"Good news — your {label} request has been approved and processed."
         if result.summary:
             text += f" {result.summary}"
-    db.add(Message(conversation_id=conv.id, sender="human", content=f"{text}\n— {admin.name}"))
+    content = f"{text}\n— {admin.name}"
+    db.add(Message(conversation_id=conv.id, sender="human", content=content))
     db.commit()
-    return {"ok": True, "decision": log.decision}
+    delivered = None
+    if conv.channel == "whatsapp":  # the decision is already made; delivery is best effort
+        try:
+            whatsapp.send_to_conversation(db, conv, content)
+            delivered = True
+        except WhatsAppError as exc:
+            log.warning("Approval result for conversation %s not delivered on WhatsApp: %s", conv.id, exc)
+            delivered = False
+    return {"ok": True, "decision": log.decision, "whatsapp_delivered": delivered}
 
 
 @app.get("/api/admin/security-events", tags=["dashboard"])

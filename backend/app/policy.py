@@ -98,8 +98,16 @@ def check_params(spec: list, params) -> tuple[dict | None, str]:
     return clean, ""
 
 
-def validate(db: Session, business: Business, session: CustomerSession, action_name: str, params: dict,
+NO_SESSION_REASON = "No verified customer account is linked to this conversation"
+
+
+def validate(db: Session, business: Business, session: CustomerSession | None, action_name: str, params: dict,
              injection_detected: bool = False, conversation_id: int | None = None) -> Decision:
+    # 0. Every action runs for a verified customer. Without a session (e.g. an unlinked WhatsApp
+    #    number) there is no identity to act for, so even read-only lookups are refused.
+    if session is None:
+        return Decision("denied", NO_SESSION_REASON)
+
     # 1. The action must be one this business has registered and enabled (least privilege)
     action = get_action(db, business, action_name) if isinstance(action_name, str) else None
     if action is None:
