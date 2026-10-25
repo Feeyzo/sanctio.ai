@@ -33,8 +33,10 @@ http://localhost:8000/api/docs.
 ## Configuration (environment variables)
 | Variable | Default | Purpose |
 |---|---|---|
-| `GEMINI_API_KEY` | empty | Google Gemini key. Without it the agent uses the built-in rule-based engine. Check it in the dashboard: **Setup → AI model → Test Gemini**. |
-| `GEMINI_MODEL` | `gemini-3.8-flash` | Model used when a key is set. If Google retires it, the error shown under **Setup → Test Gemini** names the replacement; set it here. |
+| `GEMINI_API_KEY` | empty | Google Gemini key. Without it the agent uses the built-in rule-based engine. Check it in the dashboard: **Setup → AI model → Test AI**. |
+| `GEMINI_MODEL` | `gemini-3.8-flash` | Model used when a key is set. If Google retires it, the error shown under **Setup → Test AI** names the replacement; set it here. |
+| `GROQ_API_KEY` | empty | Free key from [console.groq.com](https://console.groq.com/keys). Groq (Llama) answers when Gemini is busy or failing, or on its own if no Gemini key is set. |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model. |
 | `GEMINI_FALLBACK_MODEL` | empty | Optional second model, used when the main one is still overloaded after two retries (e.g. a *lite* model listed in AI Studio). |
 | `APP_SECRET` | development value | Signs dashboard sign-in tokens. **Set a long random value in production.** |
 | `ALLOW_PRIVATE_WEBHOOK_URLS` | `1` | Allows `http://localhost` action URLs for development. **Set to `0` in production.** |
@@ -167,7 +169,7 @@ and a PostgreSQL database, all on Render's **free** plans. Things to know about 
    and `SANCTIO_URL` on **swiftship-demo** to the sanctio URL. Both redeploy. On start, Sanctio seeds the demo
    business if it doesn't exist yet.
 4. Open the SwiftShip URL, sign in as a customer and chat. Sign in to the Sanctio URL as `demo@swiftship.test`
-   to see the dashboard, and press **Setup → AI model → Test Gemini**.
+   to see the dashboard, and press **Setup → AI model → Test AI**.
 5. **Reset before each rehearsal and before the defence:** sign in as `demo@swiftship.test` and press
    **Setup → Demo data → Reset demo**. It clears conversations, handoffs and logs, and restores the shipments.
 

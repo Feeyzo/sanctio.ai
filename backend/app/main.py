@@ -223,7 +223,7 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
 def _llm_status() -> dict:
     """Which engine answers, and whether the last Gemini call worked (a bad key otherwise fails silently)."""
     s = llm.status
-    return {"provider": LLM_PROVIDER, "last_call_ok": s["ok"], "last_error": s["error"],
+    return {"provider": LLM_PROVIDER, "models": llm.configured_models(), "last_call_ok": s["ok"], "last_error": s["error"],
             "seconds_ago": round(time.time() - s["at"]) if s["at"] else None}
 
 

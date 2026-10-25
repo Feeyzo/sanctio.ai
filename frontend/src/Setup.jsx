@@ -102,20 +102,22 @@ export default function Setup({ auth, newApiKey }) {
         )}
 
         <h3 className="gap">AI model</h3>
-        <p>{b.llm_provider === 'gemini' ? 'Google Gemini' : 'Built-in rule-based engine'}</p>
-        {b.llm_provider !== 'gemini' && <p className="muted small">No Gemini key is configured on this server, so the agent
+        <p>{b.llm_provider === 'gemini'
+          ? (b.llm_status?.models || ['Google Gemini']).join(', then ')
+          : 'Built-in rule-based engine'}</p>
+        {b.llm_provider !== 'gemini' && <p className="muted small">No AI key is configured on this server, so the agent
           matches messages to your actions and guides by keyword, and only understands simple phrasing. Set{' '}
-          <code>GEMINI_API_KEY</code> on the server for full language understanding.</p>}
+          <code>GEMINI_API_KEY</code> or <code>GROQ_API_KEY</code> on the server for full language understanding.</p>}
         {b.llm_provider === 'gemini' && b.llm_status?.last_call_ok === false && (
-          <p className="error small">The last Gemini call failed, so the agent answered with the rule-based engine
+          <p className="error small">The last AI call failed, so the agent answered with the rule-based engine
             instead: {b.llm_status.last_error}</p>)}
         {b.llm_provider === 'gemini' && (
           <>
             <button type="button" className="ghost" disabled={testing} onClick={testLlm}>
-              {testing ? 'Testing…' : 'Test Gemini'}</button>
+              {testing ? 'Testing…' : 'Test AI'}</button>
             {llmTest && (llmTest.ok
-              ? <p className="small">Gemini ({llmTest.model}) answered in {llmTest.seconds}s: “{llmTest.reply}”</p>
-              : <p className="error small">Gemini did not answer: {llmTest.error}</p>)}
+              ? <p className="small">{llmTest.model} answered in {llmTest.seconds}s: “{llmTest.reply}”</p>
+              : <p className="error small">The AI did not answer: {llmTest.error}</p>)}
           </>
         )}
       </div>
