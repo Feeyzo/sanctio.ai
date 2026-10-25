@@ -358,10 +358,21 @@ class GeminiEngine:
         self.api_key, self.model = api_key, model
         self.fallback = MockEngine()
 
-    def _call(self, system: str, contents: list[dict], schema: dict | None) -> str:
+    @staticmethod
+    def generation_config(model: str) -> dict:
+        """Settings differ by model generation. Gemini 3 and later drop temperature and control
+        thinking with thinkingLevel; 2.5 used temperature and thinkingBudget."""
+        m = re.search(r"gemini-(\d+)(?:\.(\d+))?", model)
+        major = int(m.group(1)) if m else 3
+        if major >= 3:
+            return {"thinkingConfig": {"thinkingLevel": "low"}}  # quick replies for a chat
         config = {"temperature": 0.3}
-        if "flash" in self.model and "2.5" in self.model:
-            config["thinkingConfig"] = {"thinkingBudget": 0}  # fast replies: no hidden reasoning step
+        if "flash" in model:
+            config["thinkingConfig"] = {"thinkingBudget": 0}
+        return config
+
+    def _call(self, system: str, contents: list[dict], schema: dict | None) -> str:
+        config = self.generation_config(self.model)
         if schema:
             config.update(responseMimeType="application/json", responseSchema=schema)
         body = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents, "generationConfig": config}

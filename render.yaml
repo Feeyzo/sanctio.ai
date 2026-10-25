@@ -37,6 +37,8 @@ services:
         value: "0"
       - key: GEMINI_API_KEY
         sync: false
+      - key: GEMINI_MODEL              # change here if Google retires the model (Setup -> Test Gemini shows it)
+        value: gemini-3.8-flash
       - key: DEMO_BUSINESS_URL         # e.g. https://swiftship-demo.onrender.com
         sync: false
       - key: DEMO_ADMIN_EMAIL

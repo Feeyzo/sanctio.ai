@@ -13,7 +13,7 @@ if DATABASE_URL.startswith(("postgres://", "postgresql://")):
 # LLM provider: "gemini" uses Google Gemini; "mock" uses the built-in rule-based
 # engine (no internet / no key needed — used for tests and offline demos).
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-3.8-flash"  # Google retired gemini-2.5-flash for new keys
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini" if GEMINI_API_KEY else "mock")
 
 # Security / policy thresholds

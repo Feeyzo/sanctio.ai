@@ -34,7 +34,7 @@ http://localhost:8000/api/docs.
 | Variable | Default | Purpose |
 |---|---|---|
 | `GEMINI_API_KEY` | empty | Google Gemini key. Without it the agent uses the built-in rule-based engine. Check it in the dashboard: **Setup → AI model → Test Gemini**. |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Model used when a key is set. |
+| `GEMINI_MODEL` | `gemini-3.8-flash` | Model used when a key is set. If Google retires it, the error shown under **Setup → Test Gemini** names the replacement; set it here. |
 | `APP_SECRET` | development value | Signs dashboard sign-in tokens. **Set a long random value in production.** |
 | `ALLOW_PRIVATE_WEBHOOK_URLS` | `1` | Allows `http://localhost` action URLs for development. **Set to `0` in production.** |
 | `DATABASE_URL` | SQLite file | Any SQLAlchemy URL. |

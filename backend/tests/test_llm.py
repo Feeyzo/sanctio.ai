@@ -41,13 +41,14 @@ def test_how_can_you_help_me_with_a_request_is_not_small_talk(chat, logistics):
 # ---------------------------------------------------------------- Gemini engine (fake API)
 class FakeGemini:
     def __init__(self):
-        self.requests, self.error = [], None
+        self.requests, self.error, self.urls = [], None, []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         assert request.headers["x-goog-api-key"] == "test-gemini-key"
         assert "key=" not in str(request.url)  # never in the URL
         body = json.loads(request.content)
         self.requests.append(body)
+        self.urls.append(str(request.url))
         if self.error:
             return httpx.Response(self.error[0], json={"error": {"message": self.error[1]}})
         roles = [c["role"] for c in body["contents"]]
@@ -94,7 +95,20 @@ def test_gemini_handles_small_talk(chat, gemini):
     assert r["engine"] == "gemini" and r["reply"].startswith("I'm doing great")
     req = gemini.requests[0]
     assert "HOW TO TALK" in req["systemInstruction"]["parts"][0]["text"]
-    assert req["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 0}
+    assert req["generationConfig"] == {"thinkingConfig": {"thinkingLevel": "low"},
+                                       "responseMimeType": "application/json",
+                                       "responseSchema": req["generationConfig"]["responseSchema"]}
+    assert "gemini-3.8-flash" in gemini.urls[0]
+
+
+@pytest.mark.parametrize("model, expected", [
+    ("gemini-3.8-flash", {"thinkingConfig": {"thinkingLevel": "low"}}),
+    ("gemini-4-pro", {"thinkingConfig": {"thinkingLevel": "low"}}),
+    ("gemini-2.5-flash", {"temperature": 0.3, "thinkingConfig": {"thinkingBudget": 0}}),
+    ("gemini-2.5-pro", {"temperature": 0.3}),
+])
+def test_generation_config_matches_the_model(model, expected):
+    assert llm.GeminiEngine.generation_config(model) == expected
 
 
 def test_gemini_looks_up_then_answers(chat, gemini):
