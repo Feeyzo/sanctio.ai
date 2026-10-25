@@ -14,6 +14,8 @@ if DATABASE_URL.startswith(("postgres://", "postgresql://")):
 # engine (no internet / no key needed — used for tests and offline demos).
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-3.8-flash"  # Google retired gemini-2.5-flash for new keys
+# optional second model, tried when the main one stays overloaded (e.g. a "lite" model from AI Studio)
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "").strip()
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini" if GEMINI_API_KEY else "mock")
 
 # Security / policy thresholds

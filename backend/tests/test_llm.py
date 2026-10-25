@@ -42,6 +42,7 @@ def test_how_can_you_help_me_with_a_request_is_not_small_talk(chat, logistics):
 class FakeGemini:
     def __init__(self):
         self.requests, self.error, self.urls = [], None, []
+        self.busy = []  # status codes to answer first, one per request (e.g. [503, 503])
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         assert request.headers["x-goog-api-key"] == "test-gemini-key"
@@ -49,6 +50,9 @@ class FakeGemini:
         body = json.loads(request.content)
         self.requests.append(body)
         self.urls.append(str(request.url))
+        if self.busy:
+            return httpx.Response(self.busy.pop(0), json={"error": {"message": "This model is currently "
+                                                                    "experiencing high demand."}})
         if self.error:
             return httpx.Response(self.error[0], json={"error": {"message": self.error[1]}})
         roles = [c["role"] for c in body["contents"]]
@@ -87,6 +91,8 @@ def gemini(monkeypatch):
     monkeypatch.setattr(llm, "GEMINI_API_KEY", "test-gemini-key")
     monkeypatch.setattr(llm, "LLM_PROVIDER", "gemini")
     monkeypatch.setattr(llm, "status", {"ok": None, "error": "", "at": None})
+    monkeypatch.setattr(llm, "RETRY_DELAYS", [0.0, 0.0])  # retry without waiting
+    monkeypatch.setattr(llm, "GEMINI_FALLBACK_MODEL", "")
     return fake
 
 
@@ -146,3 +152,33 @@ def test_gemini_failure_falls_back_and_is_visible(chat, gemini, client, admin):
     gemini.error = None
     test = client.post("/api/admin/llm/test", headers=admin).json()
     assert test["ok"] is True and test["reply"]
+
+
+# ---- Gemini busy (503 "high demand") ----
+def test_busy_gemini_is_retried(chat, gemini):
+    gemini.busy = [503, 503]
+    r = chat.say("Hi, how are you?")
+    assert r["engine"] == "gemini" and r["reply"].startswith("I'm doing great")
+    assert len(gemini.requests) == 3
+
+
+def test_still_busy_uses_the_fallback_model(chat, gemini, monkeypatch):
+    monkeypatch.setattr(llm, "GEMINI_FALLBACK_MODEL", "gemini-3.8-flash-lite")
+    gemini.busy = [503, 429, 503]
+    r = chat.say("Hi, how are you?")
+    assert r["engine"] == "gemini"
+    assert "gemini-3.8-flash-lite" in gemini.urls[-1] and "gemini-3.8-flash:" in gemini.urls[0]
+
+
+def test_still_busy_without_fallback_uses_rule_based(chat, gemini, client, admin):
+    gemini.busy = [503, 503, 503]
+    r = chat.say("Hi, how are you?")
+    assert r["engine"] == "rule-based" and r["intent"] == "small_talk"
+    assert len(gemini.requests) == 3
+    assert "503" in client.get("/api/admin/business", headers=admin).json()["llm_status"]["last_error"]
+
+
+def test_bad_key_is_not_retried(chat, gemini):
+    gemini.error = (400, "API key not valid.")
+    chat.say("Hi, how are you?")
+    assert len(gemini.requests) == 1

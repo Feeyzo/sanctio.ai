@@ -21,11 +21,17 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from .config import GEMINI_API_KEY, GEMINI_MODEL, LLM_PROVIDER
+from .config import GEMINI_API_KEY, GEMINI_FALLBACK_MODEL, GEMINI_MODEL, LLM_PROVIDER
 
 log = logging.getLogger("agent.llm")
 
 transport: httpx.BaseTransport | None = None  # tests replace this with a fake Gemini API
+BUSY_STATUSES = {429, 500, 502, 503, 504}  # overloaded or rate-limited: worth retrying shortly
+RETRY_DELAYS = [1.0, 2.5]                  # seconds before the 2nd and 3rd attempt (tests set this to [])
+
+
+class GeminiBusy(RuntimeError):
+    """Gemini is temporarily overloaded or rate-limited."""
 # Last result of a Gemini call, shown in the dashboard so a failing key is visible instead of silent
 status: dict = {"ok": None, "error": "", "at": None}
 
@@ -372,19 +378,41 @@ class GeminiEngine:
         return config
 
     def _call(self, system: str, contents: list[dict], schema: dict | None) -> str:
-        config = self.generation_config(self.model)
+        """Ask Gemini, riding out short overloads: busy errors (429/5xx) are retried after a pause,
+        then GEMINI_FALLBACK_MODEL (if set) is tried, before the caller falls back to the rule-based engine."""
+        models = [self.model] + ([GEMINI_FALLBACK_MODEL] if GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL != self.model else [])
+        last_error = None
+        for model in models:
+            for attempt, delay in enumerate([0.0, *RETRY_DELAYS]):
+                if delay:
+                    time.sleep(delay)
+                try:
+                    return self._request(model, system, contents, schema)
+                except GeminiBusy as exc:
+                    last_error = exc
+                    log.warning("Gemini %s busy (attempt %s): %s", model, attempt + 1, exc)
+        raise last_error
+
+    def _request(self, model: str, system: str, contents: list[dict], schema: dict | None) -> str:
+        config = self.generation_config(model)
         if schema:
             config.update(responseMimeType="application/json", responseSchema=schema)
         body = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents, "generationConfig": config}
-        with httpx.Client(transport=transport, timeout=30) as client:
-            # the key goes in a header, not the URL, so it never appears in proxy or server logs
-            r = client.post(self.URL.format(model=self.model), headers={"x-goog-api-key": self.api_key}, json=body)
+        try:
+            with httpx.Client(transport=transport, timeout=30) as client:
+                # the key goes in a header, not the URL, so it never appears in proxy or server logs
+                r = client.post(self.URL.format(model=model), headers={"x-goog-api-key": self.api_key}, json=body)
+        except httpx.TimeoutException as exc:
+            raise GeminiBusy(f"Gemini ({model}) timed out") from exc
         if r.status_code >= 400:
             try:
                 detail = r.json().get("error", {}).get("message", "")
             except ValueError:
                 detail = ""
-            raise RuntimeError(f"Gemini returned {r.status_code}: {detail or r.text[:200]}")
+            message = f"Gemini returned {r.status_code}: {detail or r.text[:200]}"
+            if r.status_code in BUSY_STATUSES:
+                raise GeminiBusy(message)
+            raise RuntimeError(message)
         data = r.json()
         candidates = data.get("candidates") or []
         parts = ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
