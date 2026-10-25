@@ -93,6 +93,41 @@ def gemini(monkeypatch):
     monkeypatch.setattr(llm, "status", {"ok": None, "error": "", "at": None})
     monkeypatch.setattr(llm, "RETRY_DELAYS", [0.0, 0.0])  # retry without waiting
     monkeypatch.setattr(llm, "GEMINI_FALLBACK_MODEL", "")
+    monkeypatch.setattr(llm, "GROQ_API_KEY", "")
+    return fake
+
+
+class FakeGroq:
+    """Groq's OpenAI-compatible API; answers with the same plans as FakeGemini."""
+    def __init__(self, gemini: FakeGemini):
+        self.gemini, self.requests, self.busy = gemini, [], []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer test-groq-key"
+        body = json.loads(request.content)
+        self.requests.append(body)
+        if self.busy:
+            return httpx.Response(self.busy.pop(0), json={"error": {"message": "Rate limit reached"}})
+        msgs = body["messages"]
+        assert msgs[0]["role"] == "system" and msgs[-1]["role"] == "user"
+        if "response_format" in body:
+            assert "Respond with ONLY a JSON object" in msgs[0]["content"]
+        # ask the Gemini fake for the same answer, then reshape it the OpenAI way
+        contents = [{"role": "model" if m["role"] == "assistant" else "user", "parts": [{"text": m["content"]}]}
+                    for m in msgs[1:]]
+        config = {"responseSchema": {}} if "response_format" in body else {}
+        g = FakeGemini().handler(httpx.Request("POST", "https://g.test", headers={"x-goog-api-key": "test-gemini-key"},
+                                               json={"contents": contents, "generationConfig": config}))
+        text = g.json()["candidates"][0]["content"]["parts"][0]["text"]
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": text}}]})
+
+
+@pytest.fixture()
+def groq(gemini, monkeypatch):
+    fake = FakeGroq(gemini)
+    route = lambda r: (fake.handler if r.url.host == "api.groq.com" else gemini.handler)(r)
+    monkeypatch.setattr(llm, "transport", httpx.MockTransport(route))
+    monkeypatch.setattr(llm, "GROQ_API_KEY", "test-groq-key")
     return fake
 
 
@@ -182,3 +217,36 @@ def test_bad_key_is_not_retried(chat, gemini):
     gemini.error = (400, "API key not valid.")
     chat.say("Hi, how are you?")
     assert len(gemini.requests) == 1
+
+
+# ---- Groq as the backup provider ----
+def test_busy_gemini_hands_over_to_groq(chat, gemini, groq):
+    gemini.busy = [503, 503, 503]
+    r = chat.say("Hi, how are you?")
+    assert r["engine"] == "groq" and r["reply"].startswith("I'm doing great")
+    assert len(gemini.requests) == 3 and len(groq.requests) == 1
+    assert groq.requests[0]["model"] == "llama-3.3-70b-versatile"
+
+
+def test_broken_gemini_goes_straight_to_groq(chat, gemini, groq, client, admin):
+    gemini.error = (404, "This model is no longer available.")
+    r = chat.say("Where is my parcel?")
+    assert r["engine"] == "groq" and r["action"]["decision"] == "executed"
+    assert r["reply"] == "Your parcel SHP-1001 is in transit to Kano."
+    test = client.post("/api/admin/llm/test", headers=admin).json()
+    assert test["ok"] is True and test["model"].startswith("groq")
+
+
+def test_groq_actions_still_need_policy_and_confirmation(chat, gemini, groq, logistics, monkeypatch):
+    monkeypatch.setattr(llm, "GEMINI_API_KEY", "")  # Groq only
+    r = chat.say("Please cancel my textbooks shipment")
+    assert r["action"]["decision"] == "awaiting_confirmation" and gemini.requests == []
+    assert logistics.shipments["SHP-1002"]["status"] == "pending_pickup"
+    r = chat.say("yes")
+    assert r["action"]["decision"] == "executed" and logistics.shipments["SHP-1002"]["status"] == "cancelled"
+
+
+def test_both_providers_down_uses_rule_based(chat, gemini, groq):
+    gemini.busy, groq.busy = [503] * 3, [429] * 3
+    r = chat.say("Hi, how are you?")
+    assert r["engine"] == "rule-based" and r["intent"] == "small_talk"

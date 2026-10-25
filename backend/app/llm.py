@@ -6,7 +6,8 @@ read-only actions so the agent can look facts up and then troubleshoot from them
 `compose()` writes the reply for the outcome of a data-changing action.
 
 Two engines share one interface:
-  * GeminiEngine – Google Gemini with JSON-structured output.
+  * GeminiEngine – Google Gemini with JSON-structured output; if Gemini is busy or failing
+                   and GROQ_API_KEY is set, the same request goes to Groq (Llama) instead.
   * MockEngine   – a deterministic rule-based engine used for tests, offline demos,
                    and as an automatic fallback if Gemini is unreachable.
 
@@ -21,7 +22,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from .config import GEMINI_API_KEY, GEMINI_FALLBACK_MODEL, GEMINI_MODEL, LLM_PROVIDER
+from .config import GEMINI_API_KEY, GEMINI_FALLBACK_MODEL, GEMINI_MODEL, GROQ_API_KEY, GROQ_MODEL, LLM_PROVIDER
 
 log = logging.getLogger("agent.llm")
 
@@ -358,11 +359,13 @@ class MockEngine:
 class GeminiEngine:
     name = "gemini"
     URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
     GEMINI_TYPES = {"string": "STRING", "number": "NUMBER", "integer": "INTEGER", "boolean": "BOOLEAN"}
 
     def __init__(self, api_key: str, model: str):
         self.api_key, self.model = api_key, model
         self.fallback = MockEngine()
+        self.answered_by = ""
 
     @staticmethod
     def generation_config(model: str) -> dict:
@@ -379,19 +382,62 @@ class GeminiEngine:
 
     def _call(self, system: str, contents: list[dict], schema: dict | None) -> str:
         """Ask Gemini, riding out short overloads: busy errors (429/5xx) are retried after a pause,
-        then GEMINI_FALLBACK_MODEL (if set) is tried, before the caller falls back to the rule-based engine."""
-        models = [self.model] + ([GEMINI_FALLBACK_MODEL] if GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL != self.model else [])
-        last_error = None
-        for model in models:
+        then GEMINI_FALLBACK_MODEL (if set) is tried. If Gemini still fails and GROQ_API_KEY is set, Groq
+        answers instead. Only if every provider fails does the caller fall back to the rule-based engine."""
+        attempts = []
+        if self.api_key:
+            models = [self.model] + ([GEMINI_FALLBACK_MODEL] if GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL != self.model else [])
+            attempts += [("gemini", m) for m in models]
+        if GROQ_API_KEY:
+            attempts.append(("groq", GROQ_MODEL))
+        last_error: Exception = RuntimeError("No AI provider key is set")
+        for provider, model in attempts:
+            send = self._request if provider == "gemini" else self._groq_request
             for attempt, delay in enumerate([0.0, *RETRY_DELAYS]):
                 if delay:
                     time.sleep(delay)
                 try:
-                    return self._request(model, system, contents, schema)
+                    text = send(model, system, contents, schema)
+                    self.answered_by = f"{provider} ({model})"
+                    return text
                 except GeminiBusy as exc:
                     last_error = exc
-                    log.warning("Gemini %s busy (attempt %s): %s", model, attempt + 1, exc)
+                    log.warning("%s %s busy (attempt %s): %s", provider, model, attempt + 1, exc)
+                except Exception as exc:  # bad key, retired model...: not worth retrying, try the next provider
+                    last_error = exc
+                    log.warning("%s %s failed: %s", provider, model, exc)
+                    break
         raise last_error
+
+    def _groq_request(self, model: str, system: str, contents: list[dict], schema: dict | None) -> str:
+        """The same request, sent to Groq's OpenAI-compatible API."""
+        if schema:
+            system += ("\n\nRespond with ONLY a JSON object (no other text) with these fields: "
+                       + json.dumps(_plain_schema(schema)))
+        messages = [{"role": "system", "content": system}] + [
+            {"role": "assistant" if c["role"] == "model" else "user", "content": c["parts"][0]["text"]}
+            for c in contents]
+        body = {"model": model, "messages": messages, "temperature": 0.3}
+        if schema:
+            body["response_format"] = {"type": "json_object"}
+        try:
+            with httpx.Client(transport=transport, timeout=30) as client:
+                r = client.post(self.GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=body)
+        except httpx.TimeoutException as exc:
+            raise GeminiBusy(f"Groq ({model}) timed out") from exc
+        if r.status_code >= 400:
+            try:
+                detail = r.json().get("error", {}).get("message", "")
+            except ValueError:
+                detail = ""
+            message = f"Groq returned {r.status_code}: {detail or r.text[:200]}"
+            if r.status_code in BUSY_STATUSES:
+                raise GeminiBusy(message)
+            raise RuntimeError(message)
+        text = ((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        if not text:
+            raise RuntimeError("Groq gave no answer")
+        return text
 
     def _request(self, model: str, system: str, contents: list[dict], schema: dict | None) -> str:
         config = self.generation_config(model)
@@ -480,9 +526,10 @@ class GeminiEngine:
                         confidence=max(0.0, min(1.0, float(data.get("confidence", 0.5)))),
                         reply=str(data.get("reply", "")), action=data.get("action") or None, params=params,
                         wants_human=bool(data.get("wants_human")), not_resolved=bool(data.get("not_resolved")),
-                        resolved=bool(data.get("resolved")), engine=self.name)
+                        resolved=bool(data.get("resolved")),
+                        engine=self.answered_by.split(" ")[0] or self.name)
         except Exception as exc:  # network error, quota, bad key, malformed JSON -> safe fallback
-            log.warning("Gemini plan failed, using fallback engine: %s", exc)
+            log.warning("AI plan failed, using fallback engine: %s", exc)
             _record(False, str(exc))
             return self.fallback.plan(message, history, ctx, steps)
 
@@ -502,25 +549,41 @@ class GeminiEngine:
             return self.fallback.compose(action, outcome, result, reason, params)
 
 
+def _plain_schema(schema: dict):
+    """Gemini's schema format, reduced to a readable {field: type} map for providers without it."""
+    if schema.get("type") == "OBJECT":
+        return {k: _plain_schema(v) for k, v in schema.get("properties", {}).items()}
+    kind = schema.get("type", "STRING").lower()
+    return kind + (" or null" if schema.get("nullable") else "")
+
+
+def configured_models() -> list[str]:
+    """The AI providers this server will try, in order (shown in the dashboard)."""
+    return ([f"Google Gemini ({GEMINI_MODEL})"] if GEMINI_API_KEY else []) + \
+        ([f"Groq ({GROQ_MODEL})"] if GROQ_API_KEY else [])
+
+
 def check() -> dict:
-    """One small request to Gemini, used by the dashboard's "Test Gemini" button."""
-    if not GEMINI_API_KEY:
-        return {"ok": False, "error": "GEMINI_API_KEY is not set on the server"}
+    """One small request, used by the dashboard's "Test AI" button. Shows which provider answered."""
+    if not (GEMINI_API_KEY or GROQ_API_KEY):
+        return {"ok": False, "error": "Neither GEMINI_API_KEY nor GROQ_API_KEY is set on the server"}
     if LLM_PROVIDER != "gemini":
-        return {"ok": False, "error": f"LLM_PROVIDER is '{LLM_PROVIDER}', so Gemini is not used"}
+        return {"ok": False, "error": f"LLM_PROVIDER is '{LLM_PROVIDER}', so no AI model is used"}
     started = time.time()
+    engine = GeminiEngine(GEMINI_API_KEY, GEMINI_MODEL)
     try:
-        reply = GeminiEngine(GEMINI_API_KEY, GEMINI_MODEL)._call(
+        reply = engine._call(
             "You are a friendly customer-service assistant.",
             [{"role": "user", "parts": [{"text": "Hi, how are you? Answer in one short sentence."}]}], None)
     except Exception as exc:
         _record(False, str(exc))
         return {"ok": False, "error": str(exc)[:300], "model": GEMINI_MODEL}
     _record(True)
-    return {"ok": True, "model": GEMINI_MODEL, "reply": reply.strip()[:300], "seconds": round(time.time() - started, 1)}
+    return {"ok": True, "model": engine.answered_by, "reply": reply.strip()[:300],
+            "seconds": round(time.time() - started, 1)}
 
 
 def get_engine():
-    if LLM_PROVIDER == "gemini" and GEMINI_API_KEY:
+    if LLM_PROVIDER == "gemini" and (GEMINI_API_KEY or GROQ_API_KEY):
         return GeminiEngine(GEMINI_API_KEY, GEMINI_MODEL)
     return MockEngine()

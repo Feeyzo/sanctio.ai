@@ -16,7 +16,10 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-3.8-flash"  # Google retired gemini-2.5-flash for new keys
 # optional second model, tried when the main one stays overloaded (e.g. a "lite" model from AI Studio)
 GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "").strip()
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini" if GEMINI_API_KEY else "mock")
+# Groq (free, fast, OpenAI-compatible) answers when Gemini is busy or failing, or on its own if only it is set.
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_MODEL = os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile"
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini" if (GEMINI_API_KEY or GROQ_API_KEY) else "mock")
 
 # Security / policy thresholds
 SESSION_TTL_MINUTES = int(os.getenv("SESSION_TTL_MINUTES", "60"))

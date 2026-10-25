@@ -5,6 +5,7 @@ _tmp = tempfile.mkdtemp()
 os.environ["DATABASE_URL"] = f"sqlite:///{_tmp}/test.db"
 os.environ["LLM_PROVIDER"] = "mock"
 os.environ["GEMINI_API_KEY"] = ""
+os.environ["GROQ_API_KEY"] = ""
 os.environ["WHATSAPP_ACCESS_TOKEN"] = "test-access-token"
 os.environ["WHATSAPP_PHONE_NUMBER_ID"] = "100000000000001"
 os.environ["WHATSAPP_VERIFY_TOKEN"] = "test-verify-token"
