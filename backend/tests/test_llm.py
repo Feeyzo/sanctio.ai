@@ -225,7 +225,7 @@ def test_busy_gemini_hands_over_to_groq(chat, gemini, groq):
     r = chat.say("Hi, how are you?")
     assert r["engine"] == "groq" and r["reply"].startswith("I'm doing great")
     assert len(gemini.requests) == 3 and len(groq.requests) == 1
-    assert groq.requests[0]["model"] == "llama-3.3-70b-versatile"
+    assert groq.requests[0]["model"] == "openai/gpt-oss-120b"
 
 
 def test_broken_gemini_goes_straight_to_groq(chat, gemini, groq, client, admin):

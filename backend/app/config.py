@@ -18,7 +18,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-3.8-flash"  # Google retired
 GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "").strip()
 # Groq (free, fast, OpenAI-compatible) answers when Gemini is busy or failing, or on its own if only it is set.
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GROQ_MODEL = os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile"
+GROQ_MODEL = os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini" if (GEMINI_API_KEY or GROQ_API_KEY) else "mock")
 
 # Security / policy thresholds
