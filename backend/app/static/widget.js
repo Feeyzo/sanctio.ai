@@ -1,6 +1,7 @@
 /* Sanctio chat widget. Usage:
  *   <script src="https://YOUR-SANCTIO-HOST/widget.js"></script>
  *   <script>Sanctio.init({ sessionToken: '<token from POST /api/v1/sessions>', title: 'Support' })</script>
+ *   init() returns { destroy() }, which removes the chat (for example on logout).
  * The session token is created by your backend, so no secret key is ever in the page. */
 (function () {
   var script = document.currentScript
@@ -99,6 +100,15 @@
 
     // the greeting is local only; `shown` counts just the messages stored on the server
     add('agent', options.greeting || 'Hi! How can I help you today?')
+
+    // remove the chat from the page, e.g. when the user logs out of a single-page app
+    return {
+      destroy: function () {
+        if (poll) clearInterval(poll)
+        poll = null
+        if (root.parentNode) root.parentNode.removeChild(root)
+      }
+    }
   }
 
   window.Sanctio = { init: init }
