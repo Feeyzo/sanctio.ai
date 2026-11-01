@@ -19,6 +19,10 @@ GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "").strip()
 # Groq (free, fast, OpenAI-compatible) answers when Gemini is busy or failing, or on its own if only it is set.
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_MODEL = os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"
+# Which AI answers first; the others are backups. Groq first: it is fast and rarely overloaded.
+LLM_ORDER = [p.strip() for p in os.getenv("LLM_ORDER", "groq,gemini").split(",") if p.strip() in ("groq", "gemini")] \
+    or ["groq", "gemini"]
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "15"))
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini" if (GEMINI_API_KEY or GROQ_API_KEY) else "mock")
 
 # Security / policy thresholds
