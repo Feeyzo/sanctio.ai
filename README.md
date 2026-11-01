@@ -6,7 +6,7 @@ after a security engine verifies each one. It detects frustrated customers and h
 with full context.
 
 ## How it fits together
-- **Website** (`frontend/`): sign-in, API documentation, sign-up, and the business dashboard (API key, actions,
+- **Website** (`frontend/`): a simple home page, sign-in, API documentation, sign-up, and the business dashboard (API key, actions,
   knowledge base, playground, handoffs, approvals, conversations, security log).
 - **API** (`backend/`): the integration API (`/api/v1/...`), the dashboard API (`/api/admin/...`) and the chat widget
   (`/widget.js`).
