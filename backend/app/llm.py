@@ -22,7 +22,8 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from .config import GEMINI_API_KEY, GEMINI_FALLBACK_MODEL, GEMINI_MODEL, GROQ_API_KEY, GROQ_MODEL, LLM_PROVIDER
+from .config import (GEMINI_API_KEY, GEMINI_FALLBACK_MODEL, GEMINI_MODEL, GROQ_API_KEY, GROQ_MODEL, LLM_ORDER,
+                     LLM_PROVIDER, LLM_TIMEOUT_SECONDS)
 
 log = logging.getLogger("agent.llm")
 
@@ -381,19 +382,16 @@ class GeminiEngine:
         return config
 
     def _call(self, system: str, contents: list[dict], schema: dict | None) -> str:
-        """Ask Gemini, riding out short overloads: busy errors (429/5xx) are retried after a pause,
-        then GEMINI_FALLBACK_MODEL (if set) is tried. If Gemini still fails and GROQ_API_KEY is set, Groq
-        answers instead. Only if every provider fails does the caller fall back to the rule-based engine."""
-        attempts = []
-        if self.api_key:
-            models = [self.model] + ([GEMINI_FALLBACK_MODEL] if GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL != self.model else [])
-            attempts += [("gemini", m) for m in models]
-        if GROQ_API_KEY:
-            attempts.append(("groq", GROQ_MODEL))
+        """Ask the AI providers in LLM_ORDER (Groq first by default). A busy or failing provider hands over
+        to the next one at once, so a customer never waits on retries while a backup is available; only the
+        last provider in the chain is retried after short pauses. If all fail, the caller uses the
+        rule-based engine."""
+        attempts = self._attempts()
         last_error: Exception = RuntimeError("No AI provider key is set")
-        for provider, model in attempts:
+        for i, (provider, model) in enumerate(attempts):
             send = self._request if provider == "gemini" else self._groq_request
-            for attempt, delay in enumerate([0.0, *RETRY_DELAYS]):
+            delays = [0.0, *RETRY_DELAYS] if i == len(attempts) - 1 else [0.0]
+            for attempt, delay in enumerate(delays):
                 if delay:
                     time.sleep(delay)
                 try:
@@ -409,6 +407,14 @@ class GeminiEngine:
                     break
         raise last_error
 
+    def _attempts(self) -> list[tuple[str, str]]:
+        available = {
+            "gemini": [("gemini", m) for m in dict.fromkeys([self.model, GEMINI_FALLBACK_MODEL]) if m]
+            if self.api_key else [],
+            "groq": [("groq", GROQ_MODEL)] if GROQ_API_KEY else [],
+        }
+        return [a for provider in LLM_ORDER for a in available[provider]]
+
     def _groq_request(self, model: str, system: str, contents: list[dict], schema: dict | None) -> str:
         """The same request, sent to Groq's OpenAI-compatible API."""
         if schema:
@@ -421,7 +427,7 @@ class GeminiEngine:
         if schema:
             body["response_format"] = {"type": "json_object"}
         try:
-            with httpx.Client(transport=transport, timeout=30) as client:
+            with httpx.Client(transport=transport, timeout=LLM_TIMEOUT_SECONDS) as client:
                 r = client.post(self.GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, json=body)
         except httpx.TimeoutException as exc:
             raise GeminiBusy(f"Groq ({model}) timed out") from exc
@@ -445,7 +451,7 @@ class GeminiEngine:
             config.update(responseMimeType="application/json", responseSchema=schema)
         body = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents, "generationConfig": config}
         try:
-            with httpx.Client(transport=transport, timeout=30) as client:
+            with httpx.Client(transport=transport, timeout=LLM_TIMEOUT_SECONDS) as client:
                 # the key goes in a header, not the URL, so it never appears in proxy or server logs
                 r = client.post(self.URL.format(model=model), headers={"x-goog-api-key": self.api_key}, json=body)
         except httpx.TimeoutException as exc:
@@ -559,8 +565,9 @@ def _plain_schema(schema: dict):
 
 def configured_models() -> list[str]:
     """The AI providers this server will try, in order (shown in the dashboard)."""
-    return ([f"Google Gemini ({GEMINI_MODEL})"] if GEMINI_API_KEY else []) + \
-        ([f"Groq ({GROQ_MODEL})"] if GROQ_API_KEY else [])
+    names = {"gemini": f"Google Gemini ({GEMINI_MODEL})" if GEMINI_API_KEY else "",
+             "groq": f"Groq ({GROQ_MODEL})" if GROQ_API_KEY else ""}
+    return [names[p] for p in LLM_ORDER if names[p]]
 
 
 def check() -> dict:

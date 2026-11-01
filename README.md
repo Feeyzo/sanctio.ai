@@ -35,8 +35,10 @@ http://localhost:8000/api/docs.
 |---|---|---|
 | `GEMINI_API_KEY` | empty | Google Gemini key. Without it the agent uses the built-in rule-based engine. Check it in the dashboard: **Setup → AI model → Test AI**. |
 | `GEMINI_MODEL` | `gemini-3.8-flash` | Model used when a key is set. If Google retires it, the error shown under **Setup → Test AI** names the replacement; set it here. |
-| `GROQ_API_KEY` | empty | Free key from [console.groq.com](https://console.groq.com/keys). Groq (gpt-oss) answers when Gemini is busy or failing, or on its own if no Gemini key is set. |
+| `GROQ_API_KEY` | empty | Free key from [console.groq.com](https://console.groq.com/keys). Groq (gpt-oss) answers first by default (see `LLM_ORDER`); Gemini is the backup. |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq model. |
+| `LLM_ORDER` | `groq,gemini` | Which AI answers first; the others are backups. A busy provider hands over to the next one at once. |
+| `LLM_TIMEOUT_SECONDS` | `15` | Longest wait for one AI reply before moving on. |
 | `GEMINI_FALLBACK_MODEL` | empty | Optional second model, used when the main one is still overloaded after two retries (e.g. a *lite* model listed in AI Studio). |
 | `APP_SECRET` | development value | Signs dashboard sign-in tokens. **Set a long random value in production.** |
 | `ALLOW_PRIVATE_WEBHOOK_URLS` | `1` | Allows `http://localhost` action URLs for development. **Set to `0` in production.** |

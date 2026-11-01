@@ -128,6 +128,7 @@ def groq(gemini, monkeypatch):
     route = lambda r: (fake.handler if r.url.host == "api.groq.com" else gemini.handler)(r)
     monkeypatch.setattr(llm, "transport", httpx.MockTransport(route))
     monkeypatch.setattr(llm, "GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setattr(llm, "LLM_ORDER", ["groq", "gemini"])
     return fake
 
 
@@ -220,15 +221,31 @@ def test_bad_key_is_not_retried(chat, gemini):
 
 
 # ---- Groq as the backup provider ----
-def test_busy_gemini_hands_over_to_groq(chat, gemini, groq):
-    gemini.busy = [503, 503, 503]
+def test_groq_answers_first_by_default(chat, gemini, groq, client, admin):
     r = chat.say("Hi, how are you?")
     assert r["engine"] == "groq" and r["reply"].startswith("I'm doing great")
-    assert len(gemini.requests) == 3 and len(groq.requests) == 1
+    assert gemini.requests == [] and len(groq.requests) == 1
     assert groq.requests[0]["model"] == "openai/gpt-oss-120b"
+    models = client.get("/api/admin/business", headers=admin).json()["llm_status"]["models"]
+    assert models[0].startswith("Groq") and models[1].startswith("Google Gemini")
 
 
-def test_broken_gemini_goes_straight_to_groq(chat, gemini, groq, client, admin):
+def test_busy_groq_hands_over_to_gemini_without_waiting(chat, gemini, groq):
+    groq.busy = [429]
+    r = chat.say("Hi, how are you?")
+    assert r["engine"] == "gemini" and len(groq.requests) == 1 and len(gemini.requests) == 1
+
+
+def test_gemini_first_when_configured(chat, gemini, groq, monkeypatch):
+    monkeypatch.setattr(llm, "LLM_ORDER", ["gemini", "groq"])
+    gemini.busy = [503]
+    r = chat.say("Hi, how are you?")
+    assert r["engine"] == "groq" and r["reply"].startswith("I'm doing great")
+    assert len(gemini.requests) == 1 and len(groq.requests) == 1  # no retries while a backup is available
+
+
+def test_broken_gemini_goes_straight_to_groq(chat, gemini, groq, client, admin, monkeypatch):
+    monkeypatch.setattr(llm, "LLM_ORDER", ["gemini", "groq"])
     gemini.error = (404, "This model is no longer available.")
     r = chat.say("Where is my parcel?")
     assert r["engine"] == "groq" and r["action"]["decision"] == "executed"
@@ -247,6 +264,6 @@ def test_groq_actions_still_need_policy_and_confirmation(chat, gemini, groq, log
 
 
 def test_both_providers_down_uses_rule_based(chat, gemini, groq):
-    gemini.busy, groq.busy = [503] * 3, [429] * 3
+    gemini.busy, groq.busy = [503] * 3, [429] * 3  # Groq once (not last), then Gemini with retries
     r = chat.say("Hi, how are you?")
     assert r["engine"] == "rule-based" and r["intent"] == "small_talk"
