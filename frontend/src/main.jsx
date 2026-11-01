@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import Home from './Home.jsx'
 import Docs from './Docs.jsx'
 import { Login, Signup } from './Auth.jsx'
 import Dashboard from './Dashboard.jsx'
 import './styles.css'
 
 const ROUTES = ['docs', 'login', 'signup', 'dashboard']
-// the home page is the sign-in page (or the dashboard once signed in)
-const routeOf = (path) => ROUTES.find((r) => path.startsWith(`/${r}`)) || 'login'
+const routeOf = (path) => ROUTES.find((r) => path.startsWith(`/${r}`)) || 'home'
 
 function loadSession() {
   try { return JSON.parse(sessionStorage.getItem('account') || 'null') } catch { return null }
@@ -23,7 +23,7 @@ function App() {
     return () => window.removeEventListener('popstate', onPop)
   }, [])
   const go = (r) => {
-    window.history.pushState({}, '', `/${r}`)
+    window.history.pushState({}, '', r === 'home' ? '/' : `/${r}`)
     setRoute(r)
     window.scrollTo(0, 0)
   }
@@ -37,7 +37,7 @@ function App() {
   const signOut = () => {
     try { sessionStorage.removeItem('account') } catch { /* ignore */ }
     setSession(null)
-    go('login')
+    go('home')
   }
   const link = (r, label, cls = '') => (
     <button className={`${cls} ${route === r ? 'active' : ''}`} onClick={() => { setMenuOpen(false); go(r) }}>{label}</button>
@@ -45,7 +45,7 @@ function App() {
   return (
     <>
       <header className="topbar">
-        <button className="brand" onClick={() => { setMenuOpen(false); go(session ? 'dashboard' : 'login') }}><span className="logo">◆</span> Sanctio</button>
+        <button className="brand" onClick={() => { setMenuOpen(false); go('home') }}><span className="logo">◆</span> Sanctio</button>
         <button className="menu-toggle" aria-expanded={menuOpen} aria-controls="site-nav" onClick={() => setMenuOpen(!menuOpen)}>
           {menuOpen ? 'Close' : 'Menu'}
         </button>
@@ -58,7 +58,8 @@ function App() {
       </header>
       {route === 'docs' && <Docs go={go} />}
       <main hidden={route === 'docs'}>
-        {route === 'login' && (session ? <Dashboard session={session} onExpired={signOut} /> : <Login onDone={signIn} go={go} />)}
+        {route === 'home' && <Home go={go} signedIn={!!session} />}
+        {route === 'login' && <Login onDone={signIn} go={go} />}
         {route === 'signup' && <Signup onDone={signIn} go={go} />}
         {route === 'dashboard' && (session ? <Dashboard session={session} onExpired={signOut} /> : <Login onDone={signIn} go={go} />)}
       </main>
