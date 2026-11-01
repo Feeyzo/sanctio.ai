@@ -6,13 +6,17 @@ after a security engine verifies each one. It detects frustrated customers and h
 with full context.
 
 ## How it fits together
-- **Website** (`frontend/`): landing page, API documentation, sign-up, and the business dashboard (API key, actions,
+- **Website** (`frontend/`): sign-in, API documentation, sign-up, and the business dashboard (API key, actions,
   knowledge base, playground, handoffs, approvals, conversations, security log).
 - **API** (`backend/`): the integration API (`/api/v1/...`), the dashboard API (`/api/admin/...`) and the chat widget
   (`/widget.js`).
 - **Your app**: a business registers *actions* that point at an endpoint on its own backend. The agent proposes an
   action, the policy engine (`backend/app/policy.py`) decides, and only then does Sanctio call that endpoint with the
   customer ID from the verified session.
+
+## Run it offline on Windows (for a demo with no internet)
+See [`offline/README.md`](offline/README.md): run `offline\setup_offline.bat` once while online, then
+`offline\start_offline.bat` starts Sanctio, the dashboard and SwiftShip on your laptop.
 
 ## Run it locally
 ```powershell

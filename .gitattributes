@@ -1,0 +1,2 @@
+# Windows batch files keep CRLF line endings everywhere (including GitHub ZIP downloads)
+*.bat -text
