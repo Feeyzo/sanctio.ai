@@ -20,6 +20,7 @@ export function Login({ onDone, go }) {
   return (
     <form className="card narrow login" onSubmit={submit({ email, password })}>
       <h2>Sign in</h2>
+      <p className="muted">Sanctio is a secure AI customer service agent that businesses add to their apps.</p>
       <label>Email<input type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></label>
       <label>Password<input type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} /></label>
       {error && <p className="error">{error}</p>}
