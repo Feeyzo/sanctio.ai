@@ -336,3 +336,39 @@ def test_wa25_approval_still_succeeds_when_whatsapp_delivery_fails(client, admin
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "decision": "approved", "whatsapp_delivered": False}
     assert logistics.shipments["SHP-3001"]["status"] == "refunded"
+
+
+# ---- dashboard: setup status and linking phones ----
+
+
+def test_wa26_status_reports_setup_without_secrets(client, admin, wa):
+    wa.send(AMINA, "hello")
+    s = client.get("/api/admin/whatsapp/status", headers=admin).json()
+    assert s["webhook_path"] == "/webhooks/whatsapp"
+    assert set(s["server"].values()) <= {True, False}  # set / not set only, never the values
+    assert "test-app-secret" not in str(s)
+    assert [n["phone_number_id"] for n in s["numbers"]] == [PNID]
+    assert {c["customer_id"] for c in s["linked_customers"]} == {"C-1001", "C-1002"}
+    assert s["last_message_at"] is not None
+
+
+def test_wa27_link_phone_from_dashboard_lets_customer_act(client, admin, wa, logistics):
+    r = client.post("/api/admin/whatsapp/link", headers=admin,
+                    json={"customer_id": "C-1003", "customer_name": "Fatima", "phone": "+234 803 000 0003"})
+    assert r.status_code == 200, r.text
+    assert r.json()["phone"] == "+2348030000003"
+    assert "SHP-3001" in wa.send("2348030000003", "track SHP-3001")
+
+
+def test_wa28_link_phone_rejects_bad_format_and_duplicates(client, admin, wa):
+    r = client.post("/api/admin/whatsapp/link", headers=admin, json={"customer_id": "C-1003", "phone": "08030000003"})
+    assert r.status_code == 422
+    r = client.post("/api/admin/whatsapp/link", headers=admin, json={"customer_id": "C-1003", "phone": "+2348030000001"})
+    assert r.status_code == 409  # already Amina's number
+
+
+def test_wa29_unlink_phone(client, admin, wa, logistics):
+    assert client.delete("/api/admin/whatsapp/link/C-1001", headers=admin).status_code == 200
+    assert client.delete("/api/admin/whatsapp/link/C-1001", headers=admin).status_code == 404
+    wa.send(AMINA, "cancel SHP-1002")
+    assert executed(logistics) == []

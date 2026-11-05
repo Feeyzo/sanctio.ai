@@ -11,7 +11,7 @@ const NAV = [
 ]
 const ABOUT = {
   Overview: 'How your agent is doing across all conversations.',
-  Setup: 'Your API key, webhook secret and what the agent knows about your business.',
+  Setup: 'Your API key, webhook secret, WhatsApp and what the agent knows about your business.',
   Actions: 'What your agent may do in your app. Each action calls an endpoint on your backend, after the security engine has approved it.',
   Knowledge: 'Troubleshooting guides, FAQs and policies. The agent answers from these, together with what it looks up in your app.',
   Playground: 'Chat with your agent as one of your customers and see what it decides on each turn.',
