@@ -290,3 +290,5 @@ table.plain td:first-child { white-space: nowrap; }
 .wa-setup table { width: 100%; border-collapse: collapse; }
 .wa-setup td, .wa-setup th { text-align: left; padding: 4px 6px; border-bottom: 1px solid #e5e7eb; }
 button.link { background: none; border: 0; padding: 0; color: #b91c1c; text-decoration: underline; cursor: pointer; font-size: 13px; }
+.wa-setup label.radio { display: flex; gap: 10px; align-items: flex-start; margin: 6px 0; font-weight: 400; }
+.wa-setup label.radio input { width: auto; margin-top: 4px; }

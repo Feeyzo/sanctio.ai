@@ -35,6 +35,8 @@ export default function WhatsAppSetup({ auth }) {
       setLink({ customer_id: '', customer_name: '', phone: '' })
     })
   }
+  const setOpen = (open) => run(() =>
+    api('/api/admin/whatsapp/settings', { method: 'PUT', headers: auth, body: { open_to_new_customers: open } }))
   const copy = () => { navigator.clipboard?.writeText(webhook); setCopied(true); setTimeout(() => setCopied(false), 1500) }
 
   if (!s) return <div className="card wa-setup"><h3>WhatsApp</h3><p className="muted">{error || 'Loading…'}</p></div>
@@ -86,9 +88,21 @@ export default function WhatsAppSetup({ auth }) {
             </form>
           )}
 
-          <h4>4. Link customers’ phones</h4>
-          <p className="muted small">Only link a number after confirming the customer owns it. Messages from an unlinked
-            number get general answers but cannot change anything.</p>
+          <h4>4. Who can use WhatsApp</h4>
+          <label className="radio">
+            <input type="radio" checked={s.open_to_new_customers} onChange={() => setOpen(true)} />
+            <span><strong>Anyone who messages</strong><br /><span className="muted small">For shops that sell on WhatsApp.
+              A new number becomes a new customer and only sees orders placed from that number.</span></span>
+          </label>
+          <label className="radio">
+            <input type="radio" checked={!s.open_to_new_customers} onChange={() => setOpen(false)} />
+            <span><strong>Only linked customers</strong><br /><span className="muted small">For businesses with accounts.
+              Other numbers get general answers but cannot change anything.</span></span>
+          </label>
+
+          <h4>5. Link customers’ phones</h4>
+          <p className="muted small">Links a WhatsApp number to an existing account. Only link a number after
+            confirming the customer owns it.</p>
           <form className="inline-form" onSubmit={addLink}>
             <input required placeholder="Customer ID, e.g. C-1001" value={link.customer_id}
               onChange={(e) => setLink({ ...link, customer_id: e.target.value })} />

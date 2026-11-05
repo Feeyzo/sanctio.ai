@@ -78,7 +78,10 @@ Customers can also chat with the agent on WhatsApp, through Meta's official **Wh
   `+2348030000001`) to `POST /api/v1/sessions`. Only do this once you have verified the customer owns the number.
   Messages from a linked number get an internal session for that customer. An unlinked number gets no
   session, so it can ask general questions but the policy engine refuses every order or account action, and the
-  reply explains how to link the number.
+  reply explains how to link the number. Numbers can also be linked on the dashboard (Setup → WhatsApp).
+- **Open businesses:** a business that sells on WhatsApp, with no customer accounts, can choose
+  *Anyone who messages* (Setup → WhatsApp, or `PUT /api/admin/whatsapp/settings`). A new number then becomes a new
+  customer whose id is made from the number (`WA-2348031234567`), so it only ever sees its own orders.
 - **Confirmations:** actions that need confirmation are sent with **Confirm** / **Cancel** buttons. A tap counts
   only for that customer's latest pending action. Old, forged or other customers' buttons change nothing and
   are logged as security events.
@@ -88,7 +91,8 @@ Customers can also chat with the agent on WhatsApp, through Meta's official **Wh
 - Voice notes, images and stickers get a polite request to type the question instead.
 
 **Upgrading an existing database:** this adds a table and columns, and makes `conversations.customer_id` nullable.
-`create_all` does not change existing tables. In development, delete `backend/agent.db` and it is recreated on
+`create_all` does not change existing tables. (Columns added later, such as `businesses.whatsapp_open`, are
+added automatically on start by `add_missing_columns()` in `app/db.py`.) In development, delete `backend/agent.db` and it is recreated on
 start. For PostgreSQL:
 ```sql
 ALTER TABLE customers ADD COLUMN phone VARCHAR(20) NOT NULL DEFAULT '';
@@ -157,6 +161,19 @@ $env:DEMO_RESET_TOKEN = "local-reset"; $env:DEMO_BUSINESS_URL = "http://localhos
 .\.venv\Scripts\python.exe -m scripts.seed_demo
 ```
 Then open http://localhost:8100 as a customer, and http://localhost:5173 signed in as `demo@swiftship.test`.
+
+## Demo shop on WhatsApp: Bella Wears
+`demo_business/shop.py` runs in the same service as SwiftShip and plays a fashion shop that sells **only on
+WhatsApp**. Customers ask for prices, order (pay on delivery), track, cancel before dispatch, change the address
+and return delivered items, all by messaging the shop's number; Sanctio answers for the owner. Orders over
+NGN 150,000 and refunds over NGN 50,000 wait for the owner's approval on the dashboard.
+
+- Order board (owner view, refreshes every 3 seconds): `<demo business URL>/shop`. The owner dispatches and
+  delivers orders there.
+- Dashboard sign-in: `owner@bellawears.test` with the demo password (`DEMO_SHOP_ADMIN_EMAIL` changes it).
+- The seed script creates the shop next to SwiftShip and connects `WHATSAPP_PHONE_NUMBER_ID` to it. Its webhook
+  secret is derived from `DEMO_WEBHOOK_SECRET`, so no extra settings are needed.
+- Without WhatsApp, try it from the shop's dashboard **Playground** with a customer id such as `WA-2348031234567`.
 
 ## Deploy for a live demo (Render, free)
 `render.yaml` describes everything: the `sanctio` service (Docker: API + website), the `swiftship-demo` service,

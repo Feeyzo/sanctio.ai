@@ -87,10 +87,12 @@ def process_payload(payload: dict) -> None:
             for status in value.get("statuses") or []:
                 log.info("WhatsApp status %s for message %s to %s%s", status.get("status"), status.get("id"),
                          status.get("recipient_id"), f" errors={status['errors']}" if status.get("errors") else "")
+            names = {str(c.get("wa_id")): str((c.get("profile") or {}).get("name", ""))
+                     for c in value.get("contacts") or [] if isinstance(c, dict)}
             for message in value.get("messages") or []:
                 try:
                     with SessionLocal() as db:
-                        process_message(db, phone_number_id, message)
+                        process_message(db, phone_number_id, message, names.get(str(message.get("from")), ""))
                 except Exception:
                     log.exception("Failed to process WhatsApp message %s", message.get("id"))
 
@@ -110,6 +112,21 @@ def find_customer(db: Session, business_id: int, phone: str) -> Customer | None:
         log.warning("Phone %s is linked to several customers of business %s; treating as unlinked", phone, business_id)
         return None
     return matches[0] if matches else None
+
+
+def register_customer(db: Session, business: Business, phone: str, name: str) -> Customer:
+    """For a business that sells on WhatsApp (whatsapp_open): a new number becomes a new customer. The
+    customer id is made from the number, so this customer can only ever see orders placed from it.
+    Meta has already verified that the message came from this number."""
+    external_id = "WA-" + phone.lstrip("+")
+    customer = db.query(Customer).filter_by(business_id=business.id, external_id=external_id).first()
+    if customer is None:  # (it exists if the business unlinked this number earlier)
+        customer = Customer(business_id=business.id, external_id=external_id, name=name[:120])
+        db.add(customer)
+    customer.phone = phone
+    db.flush()
+    log.info("Registered WhatsApp customer %s for business %s", customer.external_id, business.id)
+    return customer
 
 
 def open_conversation(db: Session, business: Business, customer: Customer | None, phone: str,
@@ -154,7 +171,7 @@ def link_hint(business: Business, phone: str) -> str:
             "then message us again. Until then I can answer general questions.")
 
 
-def process_message(db: Session, phone_number_id: str, message: dict) -> None:
+def process_message(db: Session, phone_number_id: str, message: dict, profile_name: str = "") -> None:
     number = db.query(WhatsAppNumber).filter_by(phone_number_id=phone_number_id).first()
     if number is None:
         log.warning("WhatsApp message for unconnected phone_number_id %s ignored", phone_number_id)
@@ -176,6 +193,9 @@ def process_message(db: Session, phone_number_id: str, message: dict) -> None:
     business = db.get(Business, number.business_id)
     client = WhatsAppClient(phone_number_id)
     customer = find_customer(db, business.id, sender)
+    if customer is None and business.whatsapp_open and msg_type in ("text", "button", "interactive"):
+        if not db.query(Customer).filter_by(business_id=business.id, phone=sender).first():  # not ambiguous
+            customer = register_customer(db, business, sender, profile_name)
 
     if msg_type == "text":
         text = (message.get("text") or {}).get("body", "")
@@ -319,6 +339,7 @@ def whatsapp_status(admin: AdminUser = Depends(require_admin), db: Session = Dep
         "server": {"access_token": bool(config.WHATSAPP_ACCESS_TOKEN), "app_secret": bool(config.WHATSAPP_APP_SECRET),
                    "verify_token": bool(config.WHATSAPP_VERIFY_TOKEN)},
         "webhook_path": "/webhooks/whatsapp",
+        "open_to_new_customers": db.get(Business, admin.business_id).whatsapp_open,
         "numbers": [_number_view(n) for n in numbers],
         "linked_customers": [{"customer_id": c.external_id, "name": c.name, "phone": c.phone} for c in linked],
         "last_message_at": last,
@@ -362,3 +383,18 @@ def unlink_phone(customer_id: str, admin: AdminUser = Depends(require_admin), db
     customer.phone = ""
     db.commit()
     return {"ok": True}
+
+
+class WhatsAppSettingsIn(BaseModel):
+    open_to_new_customers: bool
+
+
+@router.put("/api/admin/whatsapp/settings", tags=["dashboard"])
+def whatsapp_settings(body: WhatsAppSettingsIn, admin: AdminUser = Depends(require_admin),
+                      db: Session = Depends(get_db)):
+    """Open: anyone who messages becomes a customer identified by their number (shops selling on WhatsApp).
+    Closed: only numbers the business has linked to an existing customer can act."""
+    business = db.get(Business, admin.business_id)
+    business.whatsapp_open = body.open_to_new_customers
+    db.commit()
+    return {"open_to_new_customers": business.whatsapp_open}
