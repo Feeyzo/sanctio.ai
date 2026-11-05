@@ -20,6 +20,9 @@ class Business(Base):
     api_key_hash: Mapped[str] = mapped_column(String(128), unique=True)
     api_key_prefix: Mapped[str] = mapped_column(String(16), default="")  # shown in the dashboard to identify the key
     webhook_secret: Mapped[str] = mapped_column(String(80))  # signs requests sent to the business's backend
+    # WhatsApp: an unknown number becomes a new customer (identified by that number) instead of being
+    # limited to general answers. For shops that sell on WhatsApp, where customers have no account.
+    whatsapp_open: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 

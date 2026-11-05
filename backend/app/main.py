@@ -22,7 +22,7 @@ from . import agent, connectors, llm, policy
 from .channels import whatsapp
 from .channels.whatsapp_api import WhatsAppError, normalise_phone
 from .config import LLM_PROVIDER
-from .db import Base, engine, get_db
+from .db import Base, add_missing_columns, engine, get_db
 from .models import (Action, ActionLog, AdminUser, Business, Conversation, Customer, CustomerSession, Handoff,
                      KnowledgeArticle, Message, SecurityEvent, now)
 from .security import (hash_password, issue_session, make_admin_token, new_api_key, new_webhook_secret,
@@ -36,6 +36,7 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(engine)
+    add_missing_columns()
     _wake_demo_business()
     yield
 
@@ -238,12 +239,14 @@ def get_business(admin: AdminUser = Depends(require_admin), db: Session = Depend
 
 
 def _is_demo_admin(admin: AdminUser) -> bool:
-    return admin.email == os.getenv("DEMO_ADMIN_EMAIL", "demo@swiftship.test").strip().lower()
+    demo_emails = (os.getenv("DEMO_ADMIN_EMAIL", "demo@swiftship.test"),
+                   os.getenv("DEMO_SHOP_ADMIN_EMAIL", "owner@bellawears.test"))
+    return admin.email in {e.strip().lower() for e in demo_emails}
 
 
 @app.post("/api/admin/demo/reset", tags=["dashboard"])
 def reset_demo(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
-    """Wipe and recreate the SwiftShip demo (conversations, handoffs, logs) and reset its shipments.
+    """Wipe and recreate the demo businesses (conversations, handoffs, logs) and reset shipments and orders.
     Only the demo account can do this; it replaces `python -m scripts.seed_demo` where there is no shell."""
     if not _is_demo_admin(admin):
         raise HTTPException(403, "Only the demo account can be reset")

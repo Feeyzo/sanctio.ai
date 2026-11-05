@@ -1,4 +1,5 @@
 """SwiftShip: a small demo business that has integrated Sanctio.
+(The same service also runs Bella Wears, the WhatsApp shop demo, from shop.py at /shop.)
 
 It plays the part of a real customer of the platform:
   * its customers sign in on its own website (a fake sign-in: pick a demo customer)
@@ -18,6 +19,7 @@ import hmac
 import html
 import json
 import os
+import sys
 import threading
 import time
 from datetime import date, timedelta
@@ -26,6 +28,9 @@ from urllib.parse import parse_qs
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so shop.py is found however this is started
+import shop  # noqa: E402
 
 SANCTIO_URL = os.getenv("SANCTIO_URL", "http://localhost:8000").rstrip("/")
 API_KEY = os.getenv("DEMO_API_KEY", "")
@@ -39,6 +44,7 @@ CUSTOMERS = {"C-1001": ("Amina Yusuf", "amina@example.com"), "C-1002": ("Chinedu
              "C-1003": ("Fatima Bello", "fatima@example.com")}
 
 app = FastAPI(title="SwiftShip (Sanctio demo business)", docs_url=None, redoc_url=None)
+app.include_router(shop.router)  # Bella Wears, the WhatsApp shop
 
 
 # ------------------------------------------------------------------ the business's own data
@@ -136,6 +142,7 @@ def reset(request: Request):
     if not RESET_TOKEN or not hmac.compare_digest(request.headers.get("X-Demo-Token", ""), RESET_TOKEN):
         return JSONResponse({"ok": False}, status_code=403)
     store.reset()
+    shop.shop.reset()
     return {"ok": True}
 
 
