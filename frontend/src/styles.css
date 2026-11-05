@@ -273,3 +273,20 @@ table.plain td:first-child { white-space: nowrap; }
   .trace { position: static; }
   .bubble { max-width: 90%; }
 }
+
+/* Setup page: WhatsApp card */
+.wa-setup { grid-column: 1 / -1; }
+.wa-setup h4 { margin: 16px 0 6px; font-size: 14px; }
+.wa-setup .badge.good { background: #15803d; }
+.wa-setup .badge.warn { background: #b45309; }
+.wa-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px; }
+.checklist, .wa-setup .plain { list-style: none; padding: 0; margin: 0; }
+.checklist li { padding: 3px 0; font-size: 14px; }
+.checklist li.ok { color: #15803d; }
+.checklist li.missing { color: #b91c1c; }
+.copy-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.copy-row code { word-break: break-all; }
+.inline-form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.wa-setup table { width: 100%; border-collapse: collapse; }
+.wa-setup td, .wa-setup th { text-align: left; padding: 4px 6px; border-bottom: 1px solid #e5e7eb; }
+button.link { background: none; border: 0; padding: 0; color: #b91c1c; text-decoration: underline; cursor: pointer; font-size: 13px; }

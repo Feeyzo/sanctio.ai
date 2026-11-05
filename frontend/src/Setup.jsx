@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { api } from './api.js'
+import WhatsAppSetup from './WhatsAppSetup.jsx'
 
 export function Secret({ value }) {
   const [copied, setCopied] = useState(false)
@@ -133,6 +134,7 @@ export default function Setup({ auth, newApiKey }) {
         {error && <p className="error">{error}</p>}
         <button>{saved ? 'Saved' : 'Save'}</button>
       </form>
+      <WhatsAppSetup auth={auth} />
     </div>
   )
 }

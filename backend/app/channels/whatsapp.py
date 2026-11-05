@@ -302,3 +302,63 @@ def disconnect_number(number_id: int, admin: AdminUser = Depends(require_admin),
     db.delete(number)
     db.commit()
     return {"ok": True}
+
+
+# ------------------------------------------------------------------ dashboard: setup status and linked phones
+@router.get("/api/admin/whatsapp/status", tags=["dashboard"])
+def whatsapp_status(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    """What the Setup page needs to show whether WhatsApp is working. Secrets are reported as set or
+    not set, never shown."""
+    numbers = db.query(WhatsAppNumber).filter_by(business_id=admin.business_id).all()
+    ids = [n.phone_number_id for n in numbers]
+    last = (db.query(func.max(WhatsAppInbound.sent_at)).filter(WhatsAppInbound.phone_number_id.in_(ids)).scalar()
+            if ids else None)
+    linked = (db.query(Customer).filter(Customer.business_id == admin.business_id, Customer.phone != "")
+              .order_by(Customer.external_id).all())
+    return {
+        "server": {"access_token": bool(config.WHATSAPP_ACCESS_TOKEN), "app_secret": bool(config.WHATSAPP_APP_SECRET),
+                   "verify_token": bool(config.WHATSAPP_VERIFY_TOKEN)},
+        "webhook_path": "/webhooks/whatsapp",
+        "numbers": [_number_view(n) for n in numbers],
+        "linked_customers": [{"customer_id": c.external_id, "name": c.name, "phone": c.phone} for c in linked],
+        "last_message_at": last,
+    }
+
+
+class LinkIn(BaseModel):
+    customer_id: str = Field(..., min_length=1, max_length=64)  # the customer's id in the business's own system
+    customer_name: str = Field("", max_length=120)
+    phone: str = Field(..., min_length=7, max_length=32)
+
+
+@router.post("/api/admin/whatsapp/link", tags=["dashboard"])
+def link_phone(body: LinkIn, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    """Link a verified WhatsApp number to one of the business's customers. Only link a number after
+    confirming that the customer owns it: messages from it will act on that customer's account."""
+    phone = normalise_phone(body.phone)
+    if not phone:
+        raise HTTPException(422, "Use the international format, for example +2348031234567")
+    customer_id = body.customer_id.strip()
+    clash = (db.query(Customer).filter(Customer.business_id == admin.business_id, Customer.phone == phone,
+                                       Customer.external_id != customer_id).first())
+    if clash:
+        raise HTTPException(409, f"That number is already linked to customer {clash.external_id}")
+    customer = db.query(Customer).filter_by(business_id=admin.business_id, external_id=customer_id).first()
+    if not customer:
+        customer = Customer(business_id=admin.business_id, external_id=customer_id)
+        db.add(customer)
+    customer.phone = phone
+    if body.customer_name.strip():
+        customer.name = body.customer_name.strip()
+    db.commit()
+    return {"customer_id": customer.external_id, "name": customer.name, "phone": customer.phone}
+
+
+@router.delete("/api/admin/whatsapp/link/{customer_id}", tags=["dashboard"])
+def unlink_phone(customer_id: str, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    customer = db.query(Customer).filter_by(business_id=admin.business_id, external_id=customer_id).first()
+    if not customer or not customer.phone:
+        raise HTTPException(404, "No linked number for that customer")
+    customer.phone = ""
+    db.commit()
+    return {"ok": True}
