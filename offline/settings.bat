@@ -11,7 +11,7 @@ set DEMO_BUSINESS_URL=http://localhost:8100
 set SANCTIO_URL=http://localhost:8000
 set ALLOW_PRIVATE_WEBHOOK_URLS=1
 
-rem No internet: the built-in rule-based engine answers.
-rem If you DO have internet and want the AI, remove "rem" from the next line and paste your Groq key.
-rem set GROQ_API_KEY=gsk_paste_your_key_here
-if defined GROQ_API_KEY (set LLM_PROVIDER=gemini) else (set LLM_PROVIDER=mock)
+rem AI models: put GROQ_API_KEY and/or GEMINI_API_KEY in backend\.env (copy backend\.env.example).
+rem With a key and internet, the AI answers; with no key, or no internet, the built-in rule-based engine answers.
+rem To force the rule-based engine even when keys are set, remove "rem" from the next line.
+rem set LLM_PROVIDER=mock

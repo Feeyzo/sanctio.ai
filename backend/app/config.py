@@ -4,6 +4,26 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+
+def _load_env_file(path: Path) -> None:
+    """Load KEY=VALUE lines from backend/.env for local runs. Real environment variables always win,
+    so hosted deployments (and the tests) are unaffected. The file is gitignored: keep API keys there."""
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key, value = key.strip().removeprefix("export ").strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key and value and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_env_file(BASE_DIR / ".env")
+
 # Database (SQLite by default; any SQLAlchemy URL works, e.g. PostgreSQL)
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'agent.db'}")
 # hosting providers hand out postgres:// URLs; tell SQLAlchemy to use the psycopg (v3) driver
