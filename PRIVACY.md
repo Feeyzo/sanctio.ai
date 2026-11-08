@@ -1,0 +1,1 @@
+Sanctio Privacy Policy. Sanctio is a final-year student project at Bayero University Kano. When you message our WhatsApp test number, we store your phone number and messages only to reply to you and to show the demonstration. We do not sell or share your data. No real payments are processed. To have your messages deleted, contact abdulhafizbello05@gmail.com.
